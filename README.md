@@ -1,48 +1,48 @@
 # Aero
 
-Eine extrem leichtgewichtige Hintergrund-Chat-App in **Java** (ohne externe Libraries, ohne Datenbank, ohne Accounts).
+An extremely lightweight background chat app written in **Java** — no external libraries, no database, no accounts.
 
 ## Features
-- **Läuft im Hintergrund**: System-Tray-Icon mit dem Namen **Aero**. Das Menü bietet Chat öffnen, Einstellungen, Name ändern und Beenden.
-- **Globaler Keyboard-Shortcut**: Öffnet das schwebende Chat-Fenster von überall. Der Hotkey funktioniert beliebig oft; ein zweiter Start versucht automatisch die Fallbacks `Ctrl + Shift + Space` und `Ctrl + Shift + K`. Ein Klick auf das Tray-Icon öffnet den Chat ebenfalls.
-- **Personenauswahl & Minimal-Chat**: Person anklicken und sofort schreiben. `Esc` schließt das Fenster wieder.
-- **Gruppenchats**: Über **+ Gruppe** eine lokale Gruppe mit Namen und Mitgliedern anlegen. Gruppennachrichten werden direkt an alle online befindlichen Mitglieder gesendet; Empfänger legen die Gruppe automatisch an bzw. gleichen sie ab. Gruppen bleiben nach einem Neustart erhalten.
-- **Benachrichtigungen**: Bei neuen Nachrichten erscheint oben mittig ein kleines schwebendes Popup (nicht die Windows-Toast-Benachrichtigung). Ein Klick darauf öffnet den passenden Chat bzw. die Gruppe. In den Einstellungen lassen sich die Popups abschalten.
-- **Einstellungen**: Anzeigename, Benachrichtigungen und optionales „immer im Vordergrund“ direkt im Chat-Fenster über das Zahnrad. Standardmäßig ist das Fenster **nicht** dauerhaft im Vordergrund; der Hotkey holt es nur kurz nach vorne.
-- **Ohne Datenbank / ohne Konten**: Peer-to-Peer im lokalen Netzwerk (UDP Multicast) plus automatische Localhost-Erkennung zum einfachen Testen auf einem PC. Optional lässt sich eine Freund-IP manuell verbinden.
+- **Runs in the background**: System tray icon named **Aero**. Its menu offers Open chat, Settings, Change name, and Quit.
+- **Global keyboard shortcut**: Opens the floating chat window from anywhere. The hotkey works reliably every time; if the primary shortcut is already taken, Aero automatically falls back to `Ctrl + Shift + Space` and then `Ctrl + Shift + K`. Clicking the tray icon also opens the chat.
+- **Contact picker & minimal chat**: Click a person and start typing immediately. `Esc` closes the window.
+- **Group chats**: Click **+ Gruppe** to create a local group with a name and members. Group messages are sent directly to every online member; recipients automatically create or sync the group. Groups persist across restarts.
+- **Notifications**: When a new message arrives, a small floating popup appears at the top center of the screen (not a Windows toast notification). Click it to open the matching chat or group. Popups can be disabled in Settings.
+- **Settings**: Display name, notifications, and optional always-on-top mode are available directly in the chat window via the gear icon. By default, the window is **not** permanently on top; the hotkey only raises it briefly.
+- **No database / no accounts**: Peer-to-peer communication on the local network (UDP multicast) plus automatic localhost discovery for easy testing on a single PC. You can also connect to a friend's IP manually.
 
-## Speicherort der Einstellungen
-Alle Einstellungen werden automatisch unter `%APPDATA%\Aero` gespeichert:
-- `settings.properties` für die normale Instanz
-- `instance-<Name>.properties` bei Start mit `--name <Name>`
+## Settings location
+All settings are saved automatically under `%APPDATA%\Aero`:
+- `settings.properties` for the normal instance
+- `instance-<name>.properties` when started with `--name <name>`
 
-Darin liegen Anzeigename, Benachrichtigungs- und Vordergrund-Einstellung, die stabile Peer-ID und die lokalen Gruppen. Durch die gespeicherte Peer-ID bleiben Gruppen auch nach einem Neustart gültig.
+These files contain the display name, notification and always-on-top settings, the stable peer ID, and local groups. Because the peer ID is persisted, groups remain valid after a restart.
 
-## In IntelliJ öffnen & starten
-1. **IntelliJ IDEA** öffnen → **Open** → den Projektordner `Aero` auswählen.
-2. Falls IntelliJ nach einem SDK fragt, oben rechts das installierte Java-JDK auswählen.
-3. `src/com/quickchat/Main.java` öffnen und auf das grüne **Run ▶** Symbol klicken.
+## Open & run in IntelliJ
+1. Open **IntelliJ IDEA** → **Open** → select the `Aero` project folder.
+2. If IntelliJ asks for an SDK, select your installed Java JDK.
+3. Open `src/com/quickchat/Main.java` and click the green **Run ▶** button.
 
-Alternativ per Kommandozeile (PowerShell):
+Alternatively, use the command line (PowerShell):
 
 ```powershell
 javac -encoding UTF-8 -d out (Get-ChildItem src -Recurse -Filter *.java).FullName
 java -cp out com.quickchat.Main
 ```
 
-## Auf einem PC mit 2 Personen testen
-1. Erste Instanz normal starten (nimmt automatisch deinen Windows-Namen).
-2. In IntelliJ unter **Run → Edit Configurations...**:
-   - **Allow multiple instances** aktivieren (unter *Modify options*).
-   - Oder eine zweite Run-Configuration anlegen mit **Program arguments**: `--name Anna`.
-3. Zweite Instanz starten – beide Instanzen finden sich innerhalb von ~2 Sekunden automatisch.
-4. `Ctrl + Alt + Space` drücken, Person auswählen und Nachricht senden.
+## Test with 2 people on one PC
+1. Start the first instance normally (it automatically uses your Windows name).
+2. In IntelliJ, go to **Run → Edit Configurations...**:
+   - Enable **Allow multiple instances** under *Modify options*.
+   - Or create a second run configuration with **Program arguments**: `--name Anna`.
+3. Start the second instance — both instances discover each other automatically within about 2 seconds.
+4. Press `Ctrl + Alt + Space`, choose a person, and send a message.
 
-Die Profile (`--name Anna`) haben getrennte Einstellungsdateien und stabile Peer-IDs. So lassen sich mehrere Instanzen auf einem PC testen, ohne dass sie sich gegenseitig die Konfiguration überschreiben.
+Profiles (`--name Anna`) have separate settings files and stable peer IDs. This lets you test multiple instances on one PC without them overwriting each other's configuration.
 
-## Gruppen verwenden
-1. Im Chat-Fenster auf **+ Gruppe** klicken.
-2. Gruppennamen eingeben und mindestens eine online befindliche Person auswählen.
-3. **Erstellen** (oder `Enter`) legt die Gruppe an und öffnet direkt den Gruppenchat.
-4. Neue Gruppennachrichten erscheinen bei den Empfängern als Benachrichtigung und als Gruppeneintrag mit Ungelesen-Zähler.
-5. Rechtsklick auf eine Gruppe im Chat-Fenster bietet **Gruppe löschen**.
+## Using groups
+1. Click **+ Gruppe** in the chat window.
+2. Enter a group name and select at least one person who is online.
+3. Click **Erstellen** (or press `Enter`) to create the group and open the group chat directly.
+4. New group messages appear for recipients as a notification and as a group entry with an unread counter.
+5. Right-click a group in the chat window to access **Gruppe löschen**.
