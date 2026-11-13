@@ -1,6 +1,6 @@
 # Aero
 
-An extremely lightweight background LAN chat app written in **Java** with swing — no external libraries, no database, no accounts.
+An extremely lightweight background LAN chat app written in **Java** with swing. No libraries, accounts or else.
 
 ## Features
 - **LAN Chat** - Local area network chat for messaging without needing much ram like other chat clients.
@@ -16,10 +16,12 @@ An extremely lightweight background LAN chat app written in **Java** with swing 
 All settings are saved automatically under `%APPDATA%\Aero`:
 - `settings.properties` for the normal instance
 
-These files contain the display name, notification and always-on-top settings, the stable peer ID, and local groups. Because the peer ID is persisted, groups remain valid after a restart.
+These files contain the display name, notification and always-on-top settings, the stable peer ID, and local groups.
 
 ## Install
-Download Aero-portable.zip from the releases tab, extract it and run Aero.exe
+Download Aero-portable.zip from the releases tab, extract it and run Aero.exe \
+Windows will throw a security risk because this app has no certificate.
+   - Click `more information` and `run anyway`
 
 
 ## Using groups
