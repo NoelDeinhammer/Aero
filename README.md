@@ -1,38 +1,31 @@
 # Aero
 
-An extremely lightweight background chat app written in **Java** — no external libraries, no database, no accounts.
+An extremely lightweight background LAN chat app written in **Java** with swing — no external libraries, no database, no accounts.
 
 ## Features
-- **Runs in the background**: System tray icon named **Aero**. Its menu offers Open chat, Settings, Change name, and Quit.
-- **Global keyboard shortcut**: Opens the floating chat window from anywhere. The hotkey works reliably every time; if the primary shortcut is already taken, Aero automatically falls back to `Ctrl + Shift + Space` and then `Ctrl + Shift + K`. Clicking the tray icon also opens the chat.
-- **Contact picker & minimal chat**: Click a person and start typing immediately. `Esc` closes the window.
-- **Group chats**: Click **+ Gruppe** to create a local group with a name and members. Group messages are sent directly to every online member; recipients automatically create or sync the group. Groups persist across restarts.
-- **Notifications**: When a new message arrives, a small floating popup appears at the top center of the screen (not a Windows toast notification). Click it to open the matching chat or group. Popups can be disabled in Settings.
-- **Settings**: Display name, notifications, and optional always-on-top mode are available directly in the chat window via the gear icon. By default, the window is **not** permanently on top; the hotkey only raises it briefly.
-- **No database / no accounts**: Peer-to-peer communication on the local network (UDP multicast) plus automatic localhost discovery for easy testing on a single PC. You can also connect to a friend's IP manually.
+- **LAN Chat** - Local area network chat for messaging without needing much ram like other chat clients.
+- **Instant Chat** - Download, open, chat. No friend requests or other things. Just begin chatting.
+- **Group setup** - Make groups with certain people. Password protected.
+- **Change Language** - Choose between German/English.
+- **Disable Notifications** - To completely hide the Client you can turn of Notifications.
+- **On-screen-notification** - Easy to see on-screen Popup
+- **Connect with IP** - (EXPERIMENTAL) You can connect to people with the IP but its still experimental.
+- **Auto delete Messages** - Auto deletes all sent Messages after closing the app. (There will be a setting to toggle auto delete on/off)
 
 ## Settings location
 All settings are saved automatically under `%APPDATA%\Aero`:
 - `settings.properties` for the normal instance
-- `instance-<name>.properties` when started with `--name <name>`
 
 These files contain the display name, notification and always-on-top settings, the stable peer ID, and local groups. Because the peer ID is persisted, groups remain valid after a restart.
 
-## Open & run in IntelliJ
-1. Open **IntelliJ IDEA** → **Open** → select the `Aero` project folder.
-2. If IntelliJ asks for an SDK, select your installed Java JDK.
-3. Open `src/com/quickchat/Main.java` and click the green **Run ▶** button.
+## Install
+Download Aero-portable.zip from the releases tab, extract it and run Aero.exe
 
-Alternatively, use the command line (PowerShell):
-
-```powershell
-javac -encoding UTF-8 -d out (Get-ChildItem src -Recurse -Filter *.java).FullName
-java -cp out com.quickchat.Main
-```
 
 ## Using groups
-1. Click **+ Gruppe** in the chat window.
+1. Click **+ Group** in the chat window.
 2. Enter a group name and select at least one person who is online.
-3. Click **Erstellen** (or press `Enter`) to create the group and open the group chat directly.
+3. Click **Create** (or press `Enter`) to create the group and open the group chat directly.
 4. New group messages appear for recipients as a notification and as a group entry with an unread counter.
-5. Right-click a group in the chat window to access **Gruppe löschen**.
+5. Right-click a group in the chat window to access **Delete Group**.
+   - Groups stay until deleted.
