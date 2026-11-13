@@ -27,8 +27,15 @@ import javax.swing.JScrollPane;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.KeyStroke;
+import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.Timer;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
+import javax.swing.text.AbstractDocument;
+import javax.swing.text.AttributeSet;
+import javax.swing.text.BadLocationException;
+import javax.swing.text.DocumentFilter;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.Color;
@@ -37,6 +44,7 @@ import java.awt.Cursor;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.Font;
+import java.awt.GraphicsDevice;
 import java.awt.GraphicsEnvironment;
 import java.awt.Insets;
 import java.awt.Point;
@@ -77,6 +85,7 @@ public class ChatPopupWindow extends JDialog {
     private final JLabel headerTitle = new JLabel("Aero");
     private final JLabel headerSubtitle = new JLabel(I18n.t(I18n.Key.APP_SUBTITLE));
     private final JLabel shortcutLabel = new JLabel("Ctrl+Alt+Space");
+    private final JButton membersButton = new JButton("👥");
     private final JButton settingsButton = new JButton("⚙");
 
     // Peer list view
@@ -92,6 +101,7 @@ public class ChatPopupWindow extends JDialog {
     private final JPanel messagesContainer = new JPanel();
     private final JScrollPane messagesScroll;
     private final JTextField inputField = new JTextField();
+    private final JLabel messageCounter = new JLabel();
 
     // Settings view
     private final JTextField displayNameField = new JTextField();
@@ -194,7 +204,9 @@ public class ChatPopupWindow extends JDialog {
 
         boolean wasVisible = isVisible();
         if (!wasVisible) {
-            centerOnScreen();
+            // Keep the position the user dragged the window to. Only recenter
+            // when the saved position is no longer on any connected screen.
+            ensureOnScreen();
             setVisible(true);
         }
 
@@ -225,6 +237,7 @@ public class ChatPopupWindow extends JDialog {
         this.currentCard = CARD_CHAT;
         unreadCounts.remove(peerKey(peer.getId()));
         backButton.setVisible(true);
+        membersButton.setVisible(false);
         settingsButton.setVisible(true);
         headerTitle.setText(peer.getName());
         updateChatSubtitle();
@@ -236,7 +249,7 @@ public class ChatPopupWindow extends JDialog {
     }
 
     public void openGroupChat(ChatGroup group) {
-        if (group == null) return;
+        if (group == null || settings.isGroupDeleted(group.getId())) return;
         ChatGroup local = settings.getGroup(group.getId());
         if (local == null) {
             local = group;
@@ -251,6 +264,7 @@ public class ChatPopupWindow extends JDialog {
         this.currentCard = CARD_CHAT;
         unreadCounts.remove(groupKey(local.getId()));
         backButton.setVisible(true);
+        membersButton.setVisible(true);
         settingsButton.setVisible(true);
         headerTitle.setText(local.getName());
         updateChatSubtitle();
@@ -262,16 +276,23 @@ public class ChatPopupWindow extends JDialog {
     }
 
     public void showPeerSelector() {
+        showPeerSelector(true);
+    }
+
+    private void showPeerSelector(boolean makeVisible) {
         this.activePeer = null;
         this.activeGroup = null;
         this.currentCard = CARD_PEERS;
         backButton.setVisible(false);
+        membersButton.setVisible(false);
         settingsButton.setVisible(true);
         headerTitle.setText("Aero");
         headerSubtitle.setText(I18n.t(I18n.Key.APP_SUBTITLE));
         renderPeerList();
         cardLayout.show(contentCards, CARD_PEERS);
-        showWindow();
+        if (makeVisible) {
+            showWindow();
+        }
     }
 
     public void showSettings() {
@@ -279,6 +300,7 @@ public class ChatPopupWindow extends JDialog {
         this.activeGroup = null;
         this.currentCard = CARD_SETTINGS;
         backButton.setVisible(true);
+        membersButton.setVisible(false);
         settingsButton.setVisible(false);
         headerTitle.setText(I18n.t(I18n.Key.SETTINGS_TITLE));
         headerSubtitle.setText(I18n.t(I18n.Key.SETTINGS_SUBTITLE));
@@ -339,6 +361,13 @@ public class ChatPopupWindow extends JDialog {
     }
 
     public ChatGroup addIncomingGroupMessage(Peer sender, ChatGroup incoming, ChatMessage message) {
+        if (settings.isGroupDeleted(incoming.getId())) {
+            // The group was deleted here. Tell the sender so it disappears
+            // there too, and never let the old group reappear locally.
+            notifySenderThatGroupWasDeleted(sender, incoming.getId());
+            return null;
+        }
+
         ChatGroup local = settings.getGroup(incoming.getId());
         if (local == null) {
             local = incoming;
@@ -355,8 +384,8 @@ public class ChatPopupWindow extends JDialog {
             byte[] groupKeyBytes = local.getPasswordKeyBytes();
             if (groupKeyBytes != null) {
                 try {
-                    message.setDecryptedText(GroupCrypto.decrypt(
-                            groupKeyBytes, message.getIv(), message.getCipherText()));
+                    message.setDecryptedText(ChatMessage.truncate(GroupCrypto.decrypt(
+                            groupKeyBytes, message.getIv(), message.getCipherText())));
                 } catch (GeneralSecurityException | IllegalArgumentException e) {
                     message.setDecryptedText(I18n.t(I18n.Key.ENCRYPTED_MESSAGE));
                 }
@@ -417,6 +446,17 @@ public class ChatPopupWindow extends JDialog {
         shortcutLabel.setFont(Theme.FONT_SMALL);
         shortcutLabel.setForeground(Theme.TEXT_MUTED);
 
+        membersButton.setFont(new Font("Segoe UI Emoji", Font.PLAIN, 14));
+        membersButton.setForeground(Theme.TEXT_MUTED);
+        membersButton.setContentAreaFilled(false);
+        membersButton.setBorderPainted(false);
+        membersButton.setFocusPainted(false);
+        membersButton.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        membersButton.setMargin(new Insets(0, 2, 0, 2));
+        membersButton.setToolTipText(I18n.t(I18n.Key.VIEW_MEMBERS));
+        membersButton.setVisible(false);
+        membersButton.addActionListener(e -> showGroupMembers(activeGroup));
+
         settingsButton.setFont(new Font("Segoe UI Symbol", Font.PLAIN, 14));
         settingsButton.setForeground(Theme.TEXT_MUTED);
         settingsButton.setContentAreaFilled(false);
@@ -438,6 +478,7 @@ public class ChatPopupWindow extends JDialog {
         closeBtn.addActionListener(e -> setVisible(false));
 
         right.add(shortcutLabel);
+        right.add(membersButton);
         right.add(settingsButton);
         right.add(closeBtn);
 
@@ -697,20 +738,67 @@ public class ChatPopupWindow extends JDialog {
         styleTextField(inputField);
         inputField.setFont(Theme.FONT_BODY);
         inputField.addActionListener(e -> sendCurrentMessage());
+        installLengthLimit(inputField, ChatMessage.MAX_TEXT_LENGTH);
+        inputField.getDocument().addDocumentListener(new DocumentListener() {
+            @Override
+            public void insertUpdate(DocumentEvent e) {
+                updateMessageCounter();
+            }
+
+            @Override
+            public void removeUpdate(DocumentEvent e) {
+                updateMessageCounter();
+            }
+
+            @Override
+            public void changedUpdate(DocumentEvent e) {
+                updateMessageCounter();
+            }
+        });
 
         JButton sendBtn = accentButton("➤");
         sendBtn.setFont(Theme.FONT_TITLE);
         sendBtn.setPreferredSize(new Dimension(42, 32));
         sendBtn.addActionListener(e -> sendCurrentMessage());
 
+        messageCounter.setFont(Theme.FONT_SMALL);
+        messageCounter.setForeground(Theme.TEXT_MUTED);
+        messageCounter.setHorizontalAlignment(SwingConstants.RIGHT);
+        messageCounter.setText(ChatMessage.MAX_TEXT_LENGTH + "/" + ChatMessage.MAX_TEXT_LENGTH);
+        Dimension counterSize = messageCounter.getPreferredSize();
+        messageCounter.setPreferredSize(new Dimension(counterSize.width, counterSize.height));
+        messageCounter.setToolTipText(I18n.t(I18n.Key.MESSAGE_LIMIT_TOOLTIP,
+                ChatMessage.MAX_TEXT_LENGTH));
+        updateMessageCounter();
+
+        JPanel right = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
+        right.setOpaque(false);
+        right.add(messageCounter);
+        right.add(sendBtn);
+
         bar.add(inputField, BorderLayout.CENTER);
-        bar.add(sendBtn, BorderLayout.EAST);
+        bar.add(right, BorderLayout.EAST);
         return bar;
+    }
+
+    private void updateMessageCounter() {
+        int length = inputField.getText().length();
+        messageCounter.setText(length + "/" + ChatMessage.MAX_TEXT_LENGTH);
+        messageCounter.setForeground(length >= ChatMessage.MAX_TEXT_LENGTH
+                ? Theme.DANGER : Theme.TEXT_MUTED);
     }
 
     private void sendCurrentMessage() {
         String text = inputField.getText().trim();
         if (text.isEmpty()) return;
+        if (text.length() > ChatMessage.MAX_TEXT_LENGTH) {
+            JOptionPane.showMessageDialog(this,
+                    I18n.t(I18n.Key.MESSAGE_TOO_LONG,
+                            text.length(), ChatMessage.MAX_TEXT_LENGTH),
+                    I18n.t(I18n.Key.MESSAGE_TOO_LONG_TITLE),
+                    JOptionPane.WARNING_MESSAGE);
+            return;
+        }
 
         if (activeGroup != null) {
             inputField.setText("");
@@ -865,6 +953,10 @@ public class ChatPopupWindow extends JDialog {
         }
 
         JPopupMenu popup = new JPopupMenu();
+        JMenuItem membersItem = new JMenuItem(I18n.t(I18n.Key.VIEW_MEMBERS));
+        membersItem.addActionListener(e -> showGroupMembers(group));
+        popup.add(membersItem);
+        popup.addSeparator();
         JMenuItem deleteItem = new JMenuItem(I18n.t(I18n.Key.DELETE_GROUP_MENU));
         deleteItem.addActionListener(e -> deleteGroup(group));
         popup.add(deleteItem);
@@ -1079,10 +1171,13 @@ public class ChatPopupWindow extends JDialog {
 
     private void applyLanguageTexts() {
         settingsButton.setToolTipText(I18n.t(I18n.Key.SETTINGS_TOOLTIP));
+        membersButton.setToolTipText(I18n.t(I18n.Key.VIEW_MEMBERS));
         newGroupButton.setText(I18n.t(I18n.Key.GROUP_BUTTON));
         renameButton.setText(I18n.t(I18n.Key.RENAME_BUTTON));
         connectButton.setText(I18n.t(I18n.Key.IP_CONNECT));
         ipField.setToolTipText(I18n.t(I18n.Key.IP_TOOLTIP));
+        messageCounter.setToolTipText(I18n.t(I18n.Key.MESSAGE_LIMIT_TOOLTIP,
+                ChatMessage.MAX_TEXT_LENGTH));
 
         notificationsSectionLabel.setText(I18n.t(I18n.Key.NOTIFICATIONS_SECTION));
         notificationsCheck.setText(I18n.t(I18n.Key.NOTIFICATIONS_LABEL));
@@ -1393,8 +1488,8 @@ public class ChatPopupWindow extends JDialog {
         for (ChatMessage message : messages) {
             if (message.isEncrypted() && message.isIncoming()) {
                 try {
-                    message.setDecryptedText(GroupCrypto.decrypt(
-                            key, message.getIv(), message.getCipherText()));
+                    message.setDecryptedText(ChatMessage.truncate(GroupCrypto.decrypt(
+                            key, message.getIv(), message.getCipherText())));
                 } catch (GeneralSecurityException | IllegalArgumentException ignored) {
                 }
             }
@@ -1413,7 +1508,7 @@ public class ChatPopupWindow extends JDialog {
             return;
         }
 
-        settings.removeGroup(group.getId());
+        settings.deleteGroup(group.getId());
         histories.remove(groupKey(group.getId()));
         unreadCounts.remove(groupKey(group.getId()));
         if (activeGroup != null && activeGroup.getId().equals(group.getId())) {
@@ -1421,6 +1516,145 @@ public class ChatPopupWindow extends JDialog {
         } else {
             renderPeerList();
         }
+        notifyGroupMembersAboutDeletion(group);
+    }
+
+    /**
+     * Removes a group after another member deleted it. Returns the deleted
+     * group so the caller can show a notification, or null when nothing
+     * was deleted.
+     */
+    public ChatGroup handleRemoteGroupDeletion(Peer sender, String groupId) {
+        ChatGroup group = settings.getGroup(groupId);
+        if (group == null || !group.hasMember(sender.getId())) {
+            return null;
+        }
+
+        settings.deleteGroup(groupId);
+        histories.remove(groupKey(groupId));
+        unreadCounts.remove(groupKey(groupId));
+        if (activeGroup != null && activeGroup.getId().equals(groupId)) {
+            // Do not pop the window open when the group was deleted while
+            // Aero was hidden in the background.
+            showPeerSelector(isVisible());
+        } else {
+            renderPeerList();
+        }
+        return group;
+    }
+
+    private void notifyGroupMembersAboutDeletion(ChatGroup group) {
+        Thread thread = new Thread(() -> network.sendGroupDeletion(group),
+                "aero-group-delete");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    private void notifySenderThatGroupWasDeleted(Peer sender, String groupId) {
+        Thread thread = new Thread(() -> network.sendGroupDeletionTo(sender, groupId),
+                "aero-group-delete-reply");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    /**
+     * Opens a small window that lists every member of the group with their
+     * current online state.
+     */
+    private void showGroupMembers(ChatGroup group) {
+        if (group == null || settings.isGroupDeleted(group.getId())) {
+            return;
+        }
+        ChatGroup local = settings.getGroup(group.getId());
+        if (local != null) {
+            group = local;
+        }
+
+        JPanel body = new JPanel();
+        body.setLayout(new BoxLayout(body, BoxLayout.Y_AXIS));
+        body.setBackground(Theme.BG_WINDOW);
+        body.setBorder(BorderFactory.createEmptyBorder(10, 16, 4, 16));
+
+        JLabel summary = new JLabel(memberStatus(group));
+        summary.setFont(Theme.FONT_SMALL);
+        summary.setForeground(Theme.TEXT_MUTED);
+        summary.setAlignmentX(Component.LEFT_ALIGNMENT);
+        body.add(summary);
+        body.add(Box.createVerticalStrut(10));
+
+        JPanel memberList = new JPanel();
+        memberList.setLayout(new BoxLayout(memberList, BoxLayout.Y_AXIS));
+        memberList.setBackground(Theme.BG_WINDOW);
+
+        for (Map.Entry<String, String> entry : group.getMembers().entrySet()) {
+            memberList.add(createMemberRow(entry.getKey(), entry.getValue()));
+            memberList.add(Box.createVerticalStrut(5));
+        }
+
+        JScrollPane scroll = new JScrollPane(memberList);
+        scroll.setBorder(BorderFactory.createLineBorder(Theme.BORDER, 1));
+        scroll.getViewport().setBackground(Theme.BG_WINDOW);
+        scroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+        scroll.getVerticalScrollBar().setUnitIncrement(12);
+        int listHeight = Math.min(240, Math.max(56, group.getMemberCount() * 39 + 8));
+        scroll.setPreferredSize(new Dimension(300, listHeight));
+        scroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, listHeight));
+        scroll.setAlignmentX(Component.LEFT_ALIGNMENT);
+        body.add(scroll);
+
+        JButton closeButton = accentButton(I18n.t(I18n.Key.CLOSE));
+        closeButton.setPreferredSize(new Dimension(96, 32));
+        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
+        buttons.setBackground(Theme.BG_WINDOW);
+        buttons.setBorder(BorderFactory.createEmptyBorder(10, 16, 12, 16));
+        buttons.add(closeButton);
+
+        JDialog dialog = createStyledDialog(
+                I18n.t(I18n.Key.GROUP_MEMBERS_TITLE, group.getName()),
+                body, buttons, closeButton, closeButton);
+        closeButton.addActionListener(e -> dialog.dispose());
+        dialog.setVisible(true);
+    }
+
+    private JPanel createMemberRow(String memberId, String memberName) {
+        boolean self = memberId.equals(network.getMyId());
+        boolean online = self || latestPeers.stream()
+                .anyMatch(peer -> peer.getId().equals(memberId));
+
+        JPanel row = new JPanel(new BorderLayout(8, 0));
+        row.setBackground(Theme.BG_CARD);
+        row.setMaximumSize(new Dimension(Integer.MAX_VALUE, 34));
+        row.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(Theme.BORDER, 1),
+                BorderFactory.createEmptyBorder(7, 10, 7, 10)
+        ));
+
+        JLabel dot = new JLabel("●");
+        dot.setFont(Theme.FONT_SMALL);
+        dot.setForeground(online ? Theme.ONLINE_DOT : Theme.TEXT_MUTED);
+        dot.setToolTipText(I18n.t(online ? I18n.Key.ONLINE : I18n.Key.OFFLINE));
+
+        String displayName = memberName == null || memberName.isBlank()
+                ? memberId
+                : memberName;
+        if (self) {
+            displayName += " " + I18n.t(I18n.Key.MEMBER_YOU);
+        }
+        JLabel name = new JLabel(displayName);
+        name.setFont(Theme.FONT_BOLD);
+        name.setForeground(Theme.TEXT_PRIMARY);
+
+        JPanel left = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
+        left.setOpaque(false);
+        left.add(dot);
+        left.add(name);
+        row.add(left, BorderLayout.WEST);
+
+        JLabel status = new JLabel(I18n.t(online ? I18n.Key.ONLINE : I18n.Key.OFFLINE));
+        status.setFont(Theme.FONT_SMALL);
+        status.setForeground(online ? Theme.ONLINE_DOT : Theme.TEXT_MUTED);
+        row.add(status, BorderLayout.EAST);
+        return row;
     }
 
     private JLabel sectionLabel(String text) {
@@ -1449,6 +1683,47 @@ public class ChatPopupWindow extends JDialog {
                 BorderFactory.createLineBorder(Theme.BORDER, 1),
                 BorderFactory.createEmptyBorder(5, 8, 5, 8)
         ));
+    }
+
+    /**
+     * Caps the length of a text field so pasting a huge text can never create
+     * an oversized chat message. Excess characters are simply ignored.
+     */
+    private static void installLengthLimit(JTextField field, int maxLength) {
+        AbstractDocument document = (AbstractDocument) field.getDocument();
+        document.setDocumentFilter(new DocumentFilter() {
+            @Override
+            public void insertString(FilterBypass fb, int offset, String string,
+                                     AttributeSet attributes) throws BadLocationException {
+                replace(fb, offset, 0, string, attributes);
+            }
+
+            @Override
+            public void replace(FilterBypass fb, int offset, int length, String text,
+                                AttributeSet attributes) throws BadLocationException {
+                if (text == null) {
+                    super.replace(fb, offset, length, null, attributes);
+                    return;
+                }
+                int available = maxLength - (fb.getDocument().getLength() - length);
+                if (available <= 0) {
+                    return;
+                }
+                super.replace(fb, offset, length, limitText(text, available), attributes);
+            }
+        });
+    }
+
+    private static String limitText(String text, int maxLength) {
+        if (text.length() <= maxLength) {
+            return text;
+        }
+        int end = maxLength;
+        if (Character.isHighSurrogate(text.charAt(end - 1))
+                && Character.isLowSurrogate(text.charAt(end))) {
+            end--;
+        }
+        return text.substring(0, end);
     }
 
     private JButton linkButton(String text, Runnable action) {
@@ -1503,5 +1778,20 @@ public class ChatPopupWindow extends JDialog {
         int x = bounds.x + (bounds.width - WIDTH) / 2;
         int y = bounds.y + (bounds.height - HEIGHT) / 2;
         setLocation(x, y);
+    }
+
+    /**
+     * Recenters the window only when its current position is completely
+     * outside all connected screens (for example after a monitor was removed).
+     */
+    private void ensureOnScreen() {
+        Rectangle windowBounds = getBounds();
+        for (GraphicsDevice device : GraphicsEnvironment.getLocalGraphicsEnvironment()
+                .getScreenDevices()) {
+            if (device.getDefaultConfiguration().getBounds().intersects(windowBounds)) {
+                return;
+            }
+        }
+        centerOnScreen();
     }
 }

@@ -14,9 +14,11 @@ import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -33,6 +35,7 @@ public final class AppSettings {
     private I18n.Language language = I18n.Language.GERMAN;
     private String peerId;
     private final Map<String, ChatGroup> groups = new LinkedHashMap<>();
+    private final Set<String> deletedGroups = new LinkedHashSet<>();
 
     private AppSettings(Path file) {
         this.file = file;
@@ -84,6 +87,14 @@ public final class AppSettings {
                     properties.getProperty("group." + id + ".check", ""),
                     properties.getProperty("group." + id + ".key", ""));
             settings.groups.put(id, group);
+        }
+
+        String deleted = properties.getProperty("deletedGroups", "");
+        for (String id : deleted.split(",")) {
+            String trimmed = id.trim();
+            if (!trimmed.isEmpty()) {
+                settings.deletedGroups.add(trimmed);
+            }
         }
 
         // Make sure the file exists and contains the generated stable peer ID.
@@ -150,10 +161,24 @@ public final class AppSettings {
         save();
     }
 
-    public synchronized void removeGroup(String id) {
-        if (id != null && groups.remove(id) != null) {
+    /**
+     * Deletes a group and remembers its ID permanently. Incoming messages for
+     * a deleted group are ignored, so another member writing into it can never
+     * make it reappear.
+     */
+    public synchronized void deleteGroup(String id) {
+        if (id == null || id.isEmpty()) {
+            return;
+        }
+        boolean removed = groups.remove(id) != null;
+        boolean remembered = deletedGroups.add(id);
+        if (removed || remembered) {
             save();
         }
+    }
+
+    public synchronized boolean isGroupDeleted(String id) {
+        return id != null && deletedGroups.contains(id);
     }
 
     public synchronized void save() {
@@ -163,6 +188,9 @@ public final class AppSettings {
         properties.setProperty("alwaysOnTop", Boolean.toString(alwaysOnTop));
         properties.setProperty("language", language.getCode());
         properties.setProperty("peerId", peerId);
+        if (!deletedGroups.isEmpty()) {
+            properties.setProperty("deletedGroups", String.join(",", deletedGroups));
+        }
 
         for (ChatGroup group : groups.values()) {
             properties.setProperty("group." + group.getId() + ".name", group.getName());

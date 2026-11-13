@@ -51,7 +51,16 @@ public final class I18n {
         NO_MESSAGES_GROUP,
         NO_MESSAGES,
         DELETE_GROUP_MENU,
+        VIEW_MEMBERS,
+        GROUP_MEMBERS_TITLE,
+        MEMBER_YOU,
+        CLOSE,
+        GROUP_DELETED_TITLE,
+        GROUP_DELETED_PREVIEW,
         NOT_DELIVERED,
+        MESSAGE_LIMIT_TOOLTIP,
+        MESSAGE_TOO_LONG,
+        MESSAGE_TOO_LONG_TITLE,
         UNREAD,
         MEMBER_STATUS_ONE,
         MEMBER_STATUS_MANY,
@@ -106,7 +115,7 @@ public final class I18n {
 
     static {
         Map<Key, String> de = new HashMap<>();
-        de.put(Key.APP_SUBTITLE, "Leichtgewichtiger LAN-Chat");
+        de.put(Key.APP_SUBTITLE, "");
         de.put(Key.SETTINGS_TITLE, "Einstellungen");
         de.put(Key.SETTINGS_SUBTITLE, "Aero anpassen");
         de.put(Key.SETTINGS_TOOLTIP, "Einstellungen");
@@ -122,15 +131,21 @@ public final class I18n {
         de.put(Key.IP_CONNECT_FAILED, "Keine Antwort von {0}.\nPrüfe, ob Aero dort läuft und die Windows-Firewall Java erlaubt.");
         de.put(Key.GROUPS_SECTION, "GRUPPEN");
         de.put(Key.ONLINE_SECTION, "ONLINE");
-        de.put(Key.EMPTY_PEERS, "Noch niemand online.\n\n" +
-                "Tipp zum Testen:\n" +
-                "Starte Aero ein zweites Mal mit einem anderen Namen " +
-                "(z. B. --name Anna), oder öffne es auf einem zweiten PC im selben WLAN.\n\n" +
-                "Mit „+ Gruppe“ kannst du mehrere Personen gleichzeitig anschreiben.");
+        de.put(Key.EMPTY_PEERS, "Noch niemand online.\n\n");
         de.put(Key.NO_MESSAGES_GROUP, "Noch keine Nachrichten in dieser Gruppe.");
         de.put(Key.NO_MESSAGES, "Noch keine Nachrichten.\nSchreib die erste!");
         de.put(Key.DELETE_GROUP_MENU, "Gruppe löschen");
+        de.put(Key.VIEW_MEMBERS, "Mitglieder anzeigen");
+        de.put(Key.GROUP_MEMBERS_TITLE, "{0} – Mitglieder");
+        de.put(Key.MEMBER_YOU, "(Du)");
+        de.put(Key.CLOSE, "Schließen");
+        de.put(Key.GROUP_DELETED_TITLE, "{0} – Gruppe gelöscht");
+        de.put(Key.GROUP_DELETED_PREVIEW, "Die Gruppe wurde von {0} gelöscht.");
         de.put(Key.NOT_DELIVERED, "{0} (nicht zugestellt)");
+        de.put(Key.MESSAGE_LIMIT_TOOLTIP, "Maximal {0} Zeichen pro Nachricht");
+        de.put(Key.MESSAGE_TOO_LONG,
+                "Die Nachricht ist zu lang ({0} Zeichen). Maximal erlaubt sind {1} Zeichen.");
+        de.put(Key.MESSAGE_TOO_LONG_TITLE, "Nachricht zu lang");
         de.put(Key.UNREAD, " {0} neu ");
         de.put(Key.MEMBER_STATUS_ONE, "1 Mitglied · {0} online");
         de.put(Key.MEMBER_STATUS_MANY, "{0} Mitglieder · {1} online");
@@ -157,7 +172,8 @@ public final class I18n {
         de.put(Key.NO_PEERS_TITLE, "Keine Personen online");
         de.put(Key.NO_PEERS_MESSAGE, "Für eine Gruppe muss mindestens eine Person online sein.");
         de.put(Key.DELETE_GROUP_TITLE, "Gruppe löschen");
-        de.put(Key.DELETE_GROUP_MESSAGE, "Gruppe \"{0}\" wirklich löschen?");
+        de.put(Key.DELETE_GROUP_MESSAGE,
+                "Gruppe \"{0}\" wirklich löschen? Sie wird auch bei den anderen Mitgliedern entfernt.");
         de.put(Key.PASSWORD_REQUIRED_TITLE, "Passwort erforderlich");
         de.put(Key.PASSWORD_REQUIRED_SUBTITLE, "Gib das Passwort für „{0}“ ein.");
         de.put(Key.UNLOCK, "Entsperren");
@@ -181,7 +197,7 @@ public final class I18n {
         TEXTS.put(Language.GERMAN, Map.copyOf(de));
 
         Map<Key, String> en = new HashMap<>();
-        en.put(Key.APP_SUBTITLE, "Lightweight LAN chat");
+        en.put(Key.APP_SUBTITLE, "");
         en.put(Key.SETTINGS_TITLE, "Settings");
         en.put(Key.SETTINGS_SUBTITLE, "Customize Aero");
         en.put(Key.SETTINGS_TOOLTIP, "Settings");
@@ -197,15 +213,21 @@ public final class I18n {
         en.put(Key.IP_CONNECT_FAILED, "No response from {0}.\nCheck that Aero is running there and that Windows Firewall allows Java.");
         en.put(Key.GROUPS_SECTION, "GROUPS");
         en.put(Key.ONLINE_SECTION, "ONLINE");
-        en.put(Key.EMPTY_PEERS, "No one is online yet.\n\n" +
-                "Testing tip:\n" +
-                "Start Aero a second time with another name " +
-                "(e.g. --name Anna), or open it on a second PC on the same Wi-Fi.\n\n" +
-                "Use \u201c+ Group\u201d to message several people at once.");
+        en.put(Key.EMPTY_PEERS, "No one is online yet.\n\n");
         en.put(Key.NO_MESSAGES_GROUP, "No messages in this group yet.");
         en.put(Key.NO_MESSAGES, "No messages yet.\nSend the first one!");
         en.put(Key.DELETE_GROUP_MENU, "Delete group");
+        en.put(Key.VIEW_MEMBERS, "Show members");
+        en.put(Key.GROUP_MEMBERS_TITLE, "{0} – Members");
+        en.put(Key.MEMBER_YOU, "(you)");
+        en.put(Key.CLOSE, "Close");
+        en.put(Key.GROUP_DELETED_TITLE, "{0} – Group deleted");
+        en.put(Key.GROUP_DELETED_PREVIEW, "The group was deleted by {0}.");
         en.put(Key.NOT_DELIVERED, "{0} (not delivered)");
+        en.put(Key.MESSAGE_LIMIT_TOOLTIP, "Maximum {0} characters per message");
+        en.put(Key.MESSAGE_TOO_LONG,
+                "The message is too long ({0} characters). The maximum is {1} characters.");
+        en.put(Key.MESSAGE_TOO_LONG_TITLE, "Message too long");
         en.put(Key.UNREAD, " {0} new ");
         en.put(Key.MEMBER_STATUS_ONE, "1 member · {0} online");
         en.put(Key.MEMBER_STATUS_MANY, "{0} members · {1} online");
@@ -232,7 +254,8 @@ public final class I18n {
         en.put(Key.NO_PEERS_TITLE, "No one online");
         en.put(Key.NO_PEERS_MESSAGE, "At least one person must be online to create a group.");
         en.put(Key.DELETE_GROUP_TITLE, "Delete group");
-        en.put(Key.DELETE_GROUP_MESSAGE, "Really delete group \"{0}\"?");
+        en.put(Key.DELETE_GROUP_MESSAGE,
+                "Really delete group \"{0}\"? It will be removed for the other members too.");
         en.put(Key.PASSWORD_REQUIRED_TITLE, "Password required");
         en.put(Key.PASSWORD_REQUIRED_SUBTITLE, "Enter the password for \u201c{0}\u201d.");
         en.put(Key.UNLOCK, "Unlock");

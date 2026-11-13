@@ -90,6 +90,7 @@ public class Main {
                         if (win == null) return;
 
                         ChatGroup local = win.addIncomingGroupMessage(sender, group, message);
+                        if (local == null) return;
                         if (notif != null && settings.isNotificationsEnabled() && !win.isChattingWithGroup(local)) {
                             boolean locked = local.isPasswordProtected() && !local.hasPasswordKey();
                             String title = locked
@@ -99,6 +100,24 @@ public class Main {
                                     ? I18n.t(I18n.Key.GROUP_LOCKED_NOTIFICATION_PREVIEW)
                                     : message.getText();
                             notif.showNotification(title, preview, () -> win.openGroupChat(local));
+                        }
+                    });
+                }
+
+                @Override
+                public void onGroupDeleted(Peer sender, String groupId) {
+                    SwingUtilities.invokeLater(() -> {
+                        ChatPopupWindow win = windowRef.get();
+                        NotificationPopup notif = notifRef.get();
+                        if (win == null) return;
+
+                        ChatGroup deleted = win.handleRemoteGroupDeletion(sender, groupId);
+                        if (deleted != null && notif != null && settings.isNotificationsEnabled()) {
+                            notif.showNotification(
+                                    I18n.t(I18n.Key.GROUP_DELETED_TITLE, deleted.getName()),
+                                    I18n.t(I18n.Key.GROUP_DELETED_PREVIEW, sender.getName()),
+                                    null
+                            );
                         }
                     });
                 }
