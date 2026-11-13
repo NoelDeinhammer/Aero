@@ -1,0 +1,11 @@
+# Build output
+/out/
+/build/
+*.class
+
+# IntelliJ IDEA
+/.idea/
+*.iml
+
+# Logs
+*.log
