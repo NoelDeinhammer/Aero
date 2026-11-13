@@ -30,16 +30,6 @@ javac -encoding UTF-8 -d out (Get-ChildItem src -Recurse -Filter *.java).FullNam
 java -cp out com.quickchat.Main
 ```
 
-## Test with 2 people on one PC
-1. Start the first instance normally (it automatically uses your Windows name).
-2. In IntelliJ, go to **Run → Edit Configurations...**:
-   - Enable **Allow multiple instances** under *Modify options*.
-   - Or create a second run configuration with **Program arguments**: `--name Anna`.
-3. Start the second instance — both instances discover each other automatically within about 2 seconds.
-4. Press `Ctrl + Alt + Space`, choose a person, and send a message.
-
-Profiles (`--name Anna`) have separate settings files and stable peer IDs. This lets you test multiple instances on one PC without them overwriting each other's configuration.
-
 ## Using groups
 1. Click **+ Gruppe** in the chat window.
 2. Enter a group name and select at least one person who is online.
