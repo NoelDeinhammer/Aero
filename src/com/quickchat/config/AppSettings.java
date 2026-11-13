@@ -1,5 +1,6 @@
 package com.quickchat.config;
 
+import com.quickchat.i18n.I18n;
 import com.quickchat.model.ChatGroup;
 
 import java.io.IOException;
@@ -29,6 +30,7 @@ public final class AppSettings {
     private String displayName;
     private boolean notificationsEnabled = true;
     private boolean alwaysOnTop = false;
+    private I18n.Language language = I18n.Language.GERMAN;
     private String peerId;
     private final Map<String, ChatGroup> groups = new LinkedHashMap<>();
 
@@ -63,6 +65,7 @@ public final class AppSettings {
                 !"false".equalsIgnoreCase(properties.getProperty("notifications", "true"));
         settings.alwaysOnTop =
                 "true".equalsIgnoreCase(properties.getProperty("alwaysOnTop", "false"));
+        settings.language = I18n.fromCode(properties.getProperty("language", "de"));
 
         settings.peerId = trimToNull(properties.getProperty("peerId"));
         if (settings.peerId == null) {
@@ -75,7 +78,12 @@ public final class AppSettings {
             if (id.isEmpty()) continue;
             String name = properties.getProperty(key, "Gruppe");
             String members = properties.getProperty("group." + id + ".members", "");
-            settings.groups.put(id, ChatGroup.fromStored(id, name, members));
+            ChatGroup group = ChatGroup.fromStored(id, name, members);
+            group.setPasswordData(
+                    properties.getProperty("group." + id + ".salt", ""),
+                    properties.getProperty("group." + id + ".check", ""),
+                    properties.getProperty("group." + id + ".key", ""));
+            settings.groups.put(id, group);
         }
 
         // Make sure the file exists and contains the generated stable peer ID.
@@ -114,6 +122,16 @@ public final class AppSettings {
         save();
     }
 
+    public synchronized I18n.Language getLanguage() {
+        return language;
+    }
+
+    public synchronized void setLanguage(I18n.Language language) {
+        if (language == null || this.language == language) return;
+        this.language = language;
+        save();
+    }
+
     public String getPeerId() {
         return peerId;
     }
@@ -143,11 +161,17 @@ public final class AppSettings {
         properties.setProperty("displayName", displayName);
         properties.setProperty("notifications", Boolean.toString(notificationsEnabled));
         properties.setProperty("alwaysOnTop", Boolean.toString(alwaysOnTop));
+        properties.setProperty("language", language.getCode());
         properties.setProperty("peerId", peerId);
 
         for (ChatGroup group : groups.values()) {
             properties.setProperty("group." + group.getId() + ".name", group.getName());
             properties.setProperty("group." + group.getId() + ".members", group.serializeMembers());
+            if (group.isPasswordProtected()) {
+                properties.setProperty("group." + group.getId() + ".salt", group.getPasswordSalt());
+                properties.setProperty("group." + group.getId() + ".check", group.getPasswordCheck());
+                properties.setProperty("group." + group.getId() + ".key", group.getPasswordKey());
+            }
         }
 
         try {

@@ -2,6 +2,7 @@ package com.quickchat;
 
 import com.quickchat.config.AppSettings;
 import com.quickchat.hotkey.GlobalHotkeyListener;
+import com.quickchat.i18n.I18n;
 import com.quickchat.model.ChatGroup;
 import com.quickchat.model.ChatMessage;
 import com.quickchat.model.Peer;
@@ -38,6 +39,7 @@ public class Main {
     public static void main(String[] args) {
         String profileName = parseNameArg(args);
         AppSettings settings = AppSettings.load(profileName);
+        I18n.setLanguage(settings.getLanguage());
         String initialName = settings.getDisplayName();
 
         SwingUtilities.invokeLater(() -> {
@@ -72,7 +74,7 @@ public class Main {
                         win.addIncomingMessage(sender, message);
                         if (notif != null && settings.isNotificationsEnabled() && !win.isChattingWith(sender)) {
                             notif.showNotification(
-                                    sender.getName() + " • Neue Nachricht",
+                                    I18n.t(I18n.Key.NEW_MESSAGE_TITLE, sender.getName()),
                                     message.getText(),
                                     () -> win.openChatWith(sender)
                             );
@@ -89,11 +91,14 @@ public class Main {
 
                         ChatGroup local = win.addIncomingGroupMessage(sender, group, message);
                         if (notif != null && settings.isNotificationsEnabled() && !win.isChattingWithGroup(local)) {
-                            notif.showNotification(
-                                    local.getName() + " • " + sender.getName(),
-                                    message.getText(),
-                                    () -> win.openGroupChat(local)
-                            );
+                            boolean locked = local.isPasswordProtected() && !local.hasPasswordKey();
+                            String title = locked
+                                    ? I18n.t(I18n.Key.GROUP_LOCKED_NOTIFICATION_TITLE, local.getName())
+                                    : local.getName() + " • " + sender.getName();
+                            String preview = locked
+                                    ? I18n.t(I18n.Key.GROUP_LOCKED_NOTIFICATION_PREVIEW)
+                                    : message.getText();
+                            notif.showNotification(title, preview, () -> win.openGroupChat(local));
                         }
                     });
                 }
@@ -118,20 +123,27 @@ public class Main {
                         if (startupNoticeShown.compareAndSet(false, true)
                                 && settings.isNotificationsEnabled()) {
                             notificationPopup.showNotification(
-                                    "Aero bereit",
-                                    "Läuft im Hintergrund • Shortcut: " + shortcut,
+                                    I18n.t(I18n.Key.AERO_READY_TITLE),
+                                    I18n.t(I18n.Key.AERO_READY_BODY, shortcut),
                                     null
                             );
                         }
                     }
             );
 
+            chatWindow.setLanguageChangeListener(() -> {
+                TrayIcon icon = trayRef.get();
+                if (icon != null) {
+                    icon.setPopupMenu(buildTrayMenu(network, chatWindow, hotkeyListener, trayRef));
+                }
+            });
+
             try {
                 network.start();
             } catch (IOException e) {
                 JOptionPane.showMessageDialog(null,
-                        "Netzwerk konnte nicht gestartet werden: " + e.getMessage(),
-                        "Aero Fehler", JOptionPane.ERROR_MESSAGE);
+                        I18n.t(I18n.Key.NETWORK_ERROR, e.getMessage()),
+                        I18n.t(I18n.Key.AERO_ERROR_TITLE), JOptionPane.ERROR_MESSAGE);
                 System.exit(1);
                 return;
             }
@@ -155,33 +167,7 @@ public class Main {
             return;
         }
 
-        PopupMenu menu = new PopupMenu();
-
-        MenuItem openItem = new MenuItem("Chat öffnen");
-        openItem.addActionListener(e -> SwingUtilities.invokeLater(chatWindow::showWindow));
-
-        MenuItem settingsItem = new MenuItem("Einstellungen...");
-        settingsItem.addActionListener(e -> SwingUtilities.invokeLater(chatWindow::showSettings));
-
-        MenuItem nameItem = new MenuItem("Name ändern...");
-        nameItem.addActionListener(e -> SwingUtilities.invokeLater(chatWindow::promptRename));
-
-        MenuItem exitItem = new MenuItem("Beenden");
-        exitItem.addActionListener(e -> {
-            hotkeyListener.stop();
-            network.stop();
-            TrayIcon icon = trayRef.get();
-            if (icon != null) {
-                SystemTray.getSystemTray().remove(icon);
-            }
-            System.exit(0);
-        });
-
-        menu.add(openItem);
-        menu.add(settingsItem);
-        menu.add(nameItem);
-        menu.addSeparator();
-        menu.add(exitItem);
+        PopupMenu menu = buildTrayMenu(network, chatWindow, hotkeyListener, trayRef);
 
         TrayIcon trayIcon = new TrayIcon(
                 createTrayImage(),
@@ -197,6 +183,40 @@ public class Main {
         } catch (AWTException e) {
             chatWindow.showPeerSelector();
         }
+    }
+
+    private static PopupMenu buildTrayMenu(PeerNetwork network,
+                                           ChatPopupWindow chatWindow,
+                                           GlobalHotkeyListener hotkeyListener,
+                                           AtomicReference<TrayIcon> trayRef) {
+        PopupMenu menu = new PopupMenu();
+
+        MenuItem openItem = new MenuItem(I18n.t(I18n.Key.TRAY_OPEN));
+        openItem.addActionListener(e -> SwingUtilities.invokeLater(chatWindow::showWindow));
+
+        MenuItem settingsItem = new MenuItem(I18n.t(I18n.Key.TRAY_SETTINGS));
+        settingsItem.addActionListener(e -> SwingUtilities.invokeLater(chatWindow::showSettings));
+
+        MenuItem nameItem = new MenuItem(I18n.t(I18n.Key.TRAY_RENAME));
+        nameItem.addActionListener(e -> SwingUtilities.invokeLater(chatWindow::promptRename));
+
+        MenuItem exitItem = new MenuItem(I18n.t(I18n.Key.TRAY_EXIT));
+        exitItem.addActionListener(e -> {
+            hotkeyListener.stop();
+            network.stop();
+            TrayIcon icon = trayRef.get();
+            if (icon != null) {
+                SystemTray.getSystemTray().remove(icon);
+            }
+            System.exit(0);
+        });
+
+        menu.add(openItem);
+        menu.add(settingsItem);
+        menu.add(nameItem);
+        menu.addSeparator();
+        menu.add(exitItem);
+        return menu;
     }
 
     private static Image createTrayImage() {

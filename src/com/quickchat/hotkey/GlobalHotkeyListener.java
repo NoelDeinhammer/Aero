@@ -1,5 +1,7 @@
 package com.quickchat.hotkey;
 
+import com.quickchat.i18n.I18n;
+
 import javax.swing.SwingUtilities;
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -32,7 +34,7 @@ public class GlobalHotkeyListener {
     public void start() {
         String os = System.getProperty("os.name", "").toLowerCase();
         if (!os.contains("win")) {
-            onBoundShortcut.accept("Tray-Klick (nur Windows)");
+            onBoundShortcut.accept(I18n.t(I18n.Key.HOTKEY_TRAY_ONLY));
             return;
         }
         if (running) return;
@@ -109,8 +111,11 @@ public class GlobalHotkeyListener {
                 if ("HOTKEY".equals(trimmed)) {
                     SwingUtilities.invokeLater(onHotkey);
                 } else if (trimmed.startsWith("BOUND:")) {
-                    String label = trimmed.substring("BOUND:".length());
-                    bound = !label.startsWith("Tray-Klick");
+                    String token = trimmed.substring("BOUND:".length());
+                    bound = !"TRAY".equals(token);
+                    String label = "TRAY".equals(token)
+                            ? I18n.t(I18n.Key.HOTKEY_TRAY_ONLY)
+                            : token;
                     SwingUtilities.invokeLater(() -> onBoundShortcut.accept(label));
                 } else if (!trimmed.isEmpty()
                         && !trimmed.startsWith("#< CLIXML")
@@ -176,7 +181,7 @@ public class GlobalHotkeyListener {
                 "    Write-Line 'BOUND:Ctrl+Shift+K'",
                 "    $bound = $true",
                 "} else {",
-                "    Write-Line 'BOUND:Tray-Klick'",
+                "    Write-Line 'BOUND:TRAY'",
                 "}",
                 "if ($bound) {",
                 "    $msg = New-Object AeroHotkey+MSG",

@@ -1,5 +1,7 @@
 package com.quickchat.model;
 
+import com.quickchat.security.GroupCrypto;
+
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.LinkedHashMap;
@@ -15,6 +17,9 @@ public class ChatGroup {
     private final String id;
     private String name;
     private final Map<String, String> members = new LinkedHashMap<>();
+    private String passwordSalt = "";
+    private String passwordCheck = "";
+    private String passwordKey = "";
 
     public ChatGroup(String id, String name) {
         this.id = id;
@@ -64,6 +69,67 @@ public class ChatGroup {
         return members.get(peerId);
     }
 
+    public synchronized boolean isPasswordProtected() {
+        return !passwordSalt.isEmpty() && !passwordCheck.isEmpty();
+    }
+
+    public synchronized boolean hasPasswordKey() {
+        return !passwordKey.isEmpty();
+    }
+
+    public synchronized String getPasswordSalt() {
+        return passwordSalt;
+    }
+
+    public synchronized String getPasswordCheck() {
+        return passwordCheck;
+    }
+
+    public synchronized String getPasswordKey() {
+        return passwordKey;
+    }
+
+    public synchronized byte[] getPasswordKeyBytes() {
+        return GroupCrypto.decodeKey(passwordKey);
+    }
+
+    /**
+     * Stores the full password metadata. Only the group creator knows the
+     * derived key; recipients receive salt and verifier over the network and
+     * start with a locked group.
+     */
+    public synchronized void setPasswordData(String salt, String check, String keyBase64) {
+        this.passwordSalt = salt == null ? "" : salt;
+        this.passwordCheck = check == null ? "" : check;
+        this.passwordKey = keyBase64 == null ? "" : keyBase64;
+    }
+
+    public synchronized void setPasswordKey(String keyBase64) {
+        this.passwordKey = keyBase64 == null ? "" : keyBase64;
+    }
+
+    /**
+     * Adopts password metadata from a remote group description. An existing
+     * local key is dropped when the remote group uses different metadata, so
+     * a recreated group can never be read with a stale key.
+     *
+     * @return true when the local metadata changed
+     */
+    public synchronized boolean applyPasswordMetadata(String salt, String check) {
+        String newSalt = salt == null ? "" : salt;
+        String newCheck = check == null ? "" : check;
+        if (newSalt.isEmpty() || newCheck.isEmpty()) {
+            return false;
+        }
+        if (newSalt.equals(passwordSalt) && newCheck.equals(passwordCheck)) {
+            return false;
+        }
+        passwordSalt = newSalt;
+        passwordCheck = newCheck;
+        passwordKey = "";
+        return true;
+    }
+
     /**
      * Merges another (remote) version of the group into this one.
      * Returns true when something changed and the settings should be saved.
@@ -72,6 +138,9 @@ public class ChatGroup {
         boolean changed = false;
         if (other.name != null && !other.name.trim().isEmpty() && !other.name.equals(name)) {
             name = other.name.trim();
+            changed = true;
+        }
+        if (applyPasswordMetadata(other.passwordSalt, other.passwordCheck)) {
             changed = true;
         }
         for (Map.Entry<String, String> entry : other.members.entrySet()) {

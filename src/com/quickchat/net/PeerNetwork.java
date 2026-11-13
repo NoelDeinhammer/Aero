@@ -3,6 +3,7 @@ package com.quickchat.net;
 import com.quickchat.model.ChatGroup;
 import com.quickchat.model.ChatMessage;
 import com.quickchat.model.Peer;
+import com.quickchat.security.GroupCrypto;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -20,6 +21,7 @@ import java.net.NetworkInterface;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Comparator;
@@ -220,8 +222,26 @@ public class PeerNetwork {
             return 0;
         }
 
+        String iv = "";
+        String payload;
+        if (group.isPasswordProtected()) {
+            byte[] key = group.getPasswordKeyBytes();
+            if (key == null) {
+                return 0;
+            }
+            try {
+                GroupCrypto.Encrypted encrypted = GroupCrypto.encrypt(key, text);
+                iv = encrypted.getIv();
+                payload = encrypted.getCipherText();
+            } catch (GeneralSecurityException e) {
+                return 0;
+            }
+        } else {
+            payload = encode(text);
+        }
+
         String members = serializeGroupMembers(group);
-        String payload = String.join("|",
+        String packet = String.join("|",
                 "GMSG",
                 myId,
                 encode(myName),
@@ -229,13 +249,16 @@ public class PeerNetwork {
                 group.getId(),
                 encode(group.getName()),
                 members,
-                encode(text));
+                group.getPasswordSalt(),
+                group.getPasswordCheck(),
+                iv,
+                payload);
 
         int delivered = 0;
         for (String memberId : group.getMemberIds()) {
             if (myId.equals(memberId)) continue;
             Peer peer = peers.get(memberId);
-            if (peer != null && sendRaw(peer, payload)) {
+            if (peer != null && sendRaw(peer, packet)) {
                 delivered++;
             }
         }
@@ -316,7 +339,36 @@ public class PeerNetwork {
                 Peer sender = upsertPeer(senderId, senderName, remoteHost, senderPort);
                 ChatMessage msg = new ChatMessage(sender.getId(), sender.getName(), text, true);
                 listener.onMessageReceived(sender, msg);
+            } else if ("GMSG".equals(parts[0]) && parts.length >= 11) {
+                String senderId = parts[1];
+                String senderName = decode(parts[2]);
+                int senderPort = Integer.parseInt(parts[3]);
+                String groupId = parts[4];
+                if (!groupId.matches(ID_PATTERN)) return;
+
+                String groupName = decode(parts[5]);
+                String encodedMembers = parts[6];
+                String salt = parts[7];
+                String check = parts[8];
+                String iv = parts[9];
+                String payload = parts[10];
+
+                Peer sender = upsertPeer(senderId, senderName, remoteHost, senderPort);
+                ChatGroup group = new ChatGroup(groupId, groupName);
+                group.setPasswordData(salt, check, "");
+                parseGroupMembers(encodedMembers, group);
+                group.addMember(sender.getId(), sender.getName());
+
+                ChatMessage msg;
+                if (!salt.isEmpty() && !check.isEmpty()) {
+                    msg = ChatMessage.encryptedIncoming(groupId, sender.getName(), iv, payload);
+                } else {
+                    msg = new ChatMessage(groupId, sender.getName(), decode(payload), true);
+                }
+                listener.onGroupMessageReceived(sender, group, msg);
             } else if ("GMSG".equals(parts[0]) && parts.length >= 8) {
+                // Backwards compatibility with older Aero versions that did
+                // not support password-protected groups.
                 String senderId = parts[1];
                 String senderName = decode(parts[2]);
                 int senderPort = Integer.parseInt(parts[3]);
