@@ -1,6 +1,7 @@
 package com.quickchat.config;
 
 import com.quickchat.model.ChatMessage;
+import com.quickchat.model.FileAttachment;
 
 import java.io.IOException;
 import java.io.Reader;
@@ -8,11 +9,14 @@ import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
 
@@ -85,17 +89,21 @@ public final class ChatHistoryStore {
             for (int index = 0; index < count; index++) {
                 String base = messageKey(type, id, index);
                 String text = properties.getProperty(base + "text");
-                if (text == null) {
+                boolean incoming = "true".equalsIgnoreCase(
+                        properties.getProperty(base + "incoming", "false"));
+                FileAttachment attachment = readAttachment(properties, base, incoming);
+                if (text == null && attachment == null) {
                     continue;
                 }
                 messages.add(ChatMessage.restored(
                         id,
                         properties.getProperty(base + "sender", ""),
-                        ChatMessage.truncate(text),
-                        "true".equalsIgnoreCase(properties.getProperty(base + "incoming", "false")),
+                        ChatMessage.truncate(text == null ? "" : text),
+                        incoming,
                         properties.getProperty(base + "time", ""),
                         properties.getProperty(base + "iv", ""),
-                        properties.getProperty(base + "cipher", "")
+                        properties.getProperty(base + "cipher", ""),
+                        attachment
                 ));
             }
 
@@ -147,6 +155,9 @@ public final class ChatHistoryStore {
                     properties.setProperty(base + "iv", message.getIv());
                     properties.setProperty(base + "cipher", message.getCipherText());
                 }
+                if (message.hasAttachment()) {
+                    writeAttachment(properties, base, message.getAttachment());
+                }
             }
         }
 
@@ -154,6 +165,145 @@ public final class ChatHistoryStore {
             clear();
         } else {
             write(properties);
+        }
+    }
+
+    private static void writeAttachment(Properties properties, String base,
+                                        FileAttachment attachment) {
+        properties.setProperty(base + "att", "true");
+        properties.setProperty(base + "att.id", safe(attachment.getTransferId()));
+        properties.setProperty(base + "att.name", safe(attachment.getFileName()));
+        properties.setProperty(base + "att.size", Long.toString(attachment.getFileSize()));
+        properties.setProperty(base + "att.image", Boolean.toString(attachment.isImage()));
+        properties.setProperty(base + "att.status",
+                attachment.getStatus() == null ? "" : attachment.getStatus().name());
+        if (attachment.getLocalPath() != null) {
+            properties.setProperty(base + "att.path", attachment.getLocalPath().toString());
+        }
+        setIfNotEmpty(properties, base + "att.metaIv", attachment.getMetaIv());
+        setIfNotEmpty(properties, base + "att.metaCipher", attachment.getMetaCipherText());
+        properties.setProperty(base + "att.pending",
+                Boolean.toString(attachment.isEncryptedPendingUnlock()));
+        properties.setProperty(base + "att.encrypted",
+                Boolean.toString(attachment.isEncryptedOffer()));
+        setIfNotEmpty(properties, base + "att.offerPeer", attachment.getOfferPeerId());
+        setIfNotEmpty(properties, base + "att.offerHost", attachment.getOfferHost());
+        properties.setProperty(base + "att.offerPort",
+                Integer.toString(Math.max(0, attachment.getOfferPort())));
+        setIfNotEmpty(properties, base + "att.offerGroup", attachment.getOfferGroupId());
+    }
+
+    private static FileAttachment readAttachment(Properties properties, String base,
+                                                 boolean incoming) {
+        if (!"true".equalsIgnoreCase(properties.getProperty(base + "att", "false"))) {
+            return null;
+        }
+
+        String transferId = properties.getProperty(base + "att.id", "");
+        String fileName = properties.getProperty(base + "att.name", "");
+        long fileSize = parseLong(properties.getProperty(base + "att.size"), 0L);
+        boolean image = Boolean.parseBoolean(properties.getProperty(base + "att.image", "false"))
+                || FileAttachment.isImageFileName(fileName);
+        Path localPath = parsePath(properties.getProperty(base + "att.path"));
+        FileAttachment.Status storedStatus = parseStatus(
+                properties.getProperty(base + "att.status"));
+        boolean pending = Boolean.parseBoolean(
+                properties.getProperty(base + "att.pending", "false"));
+        boolean encryptedOffer = Boolean.parseBoolean(
+                properties.getProperty(base + "att.encrypted", "false"));
+        String metaIv = emptyToNull(properties.getProperty(base + "att.metaIv"));
+        String metaCipher = emptyToNull(properties.getProperty(base + "att.metaCipher"));
+
+        FileAttachment attachment;
+        if (encryptedOffer || (metaIv != null && metaCipher != null)) {
+            attachment = FileAttachment.encryptedIncomingOffer(
+                    transferId, fileSize, metaIv, metaCipher);
+            attachment.setFileName(fileName);
+            attachment.setImage(image);
+        } else {
+            attachment = new FileAttachment(transferId, fileName, fileSize, image,
+                    localPath, storedStatus);
+        }
+        attachment.setLocalPath(localPath);
+        attachment.setEncryptedPendingUnlock(pending);
+        attachment.setStatus(statusForRestore(storedStatus, localPath, incoming));
+        attachment.setOfferSource(
+                emptyToNull(properties.getProperty(base + "att.offerPeer")),
+                emptyToNull(properties.getProperty(base + "att.offerHost")),
+                (int) parseLong(properties.getProperty(base + "att.offerPort"), 0L),
+                emptyToNull(properties.getProperty(base + "att.offerGroup")),
+                encryptedOffer
+        );
+        if (attachment.getStatus() == FileAttachment.Status.COMPLETED) {
+            attachment.setBytesTransferred(fileSize);
+        }
+        return attachment;
+    }
+
+    /**
+     * Transfers cannot survive a restart. Local files that are still present
+     * count as completed; incoming offers can be downloaded again while the
+     * sender is online.
+     */
+    private static FileAttachment.Status statusForRestore(FileAttachment.Status stored,
+                                                          Path localPath,
+                                                          boolean incoming) {
+        boolean localFileExists = localPath != null && Files.isRegularFile(localPath);
+        if (stored == FileAttachment.Status.TRANSFERRING) {
+            if (localFileExists) {
+                return FileAttachment.Status.COMPLETED;
+            }
+            return incoming ? FileAttachment.Status.AVAILABLE : FileAttachment.Status.FAILED;
+        }
+        if (stored == FileAttachment.Status.COMPLETED && !localFileExists) {
+            // The transfer itself finished; only the local copy is gone.
+            // Incoming files can be fetched again while the sender is online.
+            return incoming ? FileAttachment.Status.AVAILABLE
+                    : FileAttachment.Status.COMPLETED;
+        }
+        return stored == null ? FileAttachment.Status.AVAILABLE : stored;
+    }
+
+    private static FileAttachment.Status parseStatus(String value) {
+        if (value == null || value.isBlank()) {
+            return FileAttachment.Status.AVAILABLE;
+        }
+        try {
+            return FileAttachment.Status.valueOf(value.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            return FileAttachment.Status.AVAILABLE;
+        }
+    }
+
+    private static Path parsePath(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return Paths.get(value);
+        } catch (InvalidPathException e) {
+            return null;
+        }
+    }
+
+    private static long parseLong(String value, long fallback) {
+        if (value == null) {
+            return fallback;
+        }
+        try {
+            return Long.parseLong(value.trim());
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    private static String emptyToNull(String value) {
+        return value == null || value.isEmpty() ? null : value;
+    }
+
+    private static void setIfNotEmpty(Properties properties, String key, String value) {
+        if (value != null && !value.isEmpty()) {
+            properties.setProperty(key, value);
         }
     }
 

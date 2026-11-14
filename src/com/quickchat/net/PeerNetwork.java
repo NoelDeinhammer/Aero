@@ -2,12 +2,16 @@ package com.quickchat.net;
 
 import com.quickchat.model.ChatGroup;
 import com.quickchat.model.ChatMessage;
+import com.quickchat.model.FileAttachment;
 import com.quickchat.model.Peer;
 import com.quickchat.security.GroupCrypto;
 
-import java.io.BufferedReader;
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.InputStreamReader;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.net.DatagramPacket;
@@ -21,20 +25,27 @@ import java.net.NetworkInterface;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.security.GeneralSecurityException;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.Enumeration;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 
 /**
  * Zero-database peer-to-peer networking layer.
@@ -49,6 +60,17 @@ public class PeerNetwork {
     private static final int BROADCAST_PORT = 55557;
     private static final long PEER_TIMEOUT_MS = 12_000;
     private static final String ID_PATTERN = "[A-Za-z0-9_-]{1,64}";
+    private static final int FILE_BUFFER_SIZE = 65_536;
+    private static final int FILE_SOCKET_TIMEOUT_MS = 60_000;
+    private static final int OFFER_ACK_TIMEOUT_MS = 5_000;
+    private static final int MAX_HEADER_LINE_BYTES = 65_536;
+
+    public enum DownloadOutcome {
+        COMPLETED,
+        CANCELLED,
+        UNAVAILABLE,
+        FAILED
+    }
 
     public interface Listener {
         void onPeersUpdated(List<Peer> peers);
@@ -59,14 +81,44 @@ public class PeerNetwork {
 
         default void onGroupDeleted(Peer sender, String groupId) {
         }
+
+        default void onFileOffered(Peer sender, ChatMessage message) {
+        }
+
+        default boolean onGroupFileOffered(Peer sender, ChatGroup group, ChatMessage message) {
+            return true;
+        }
+    }
+
+    private static final class OutgoingOffer {
+        final Path file;
+        final long fileSize;
+        final boolean encrypted;
+        final byte[] key;
+        final FileAttachment senderAttachment;
+        final Set<String> allowedPeerIds;
+        final AtomicInteger activeDownloads = new AtomicInteger(0);
+        volatile boolean revoked;
+
+        OutgoingOffer(Path file, long fileSize, boolean encrypted, byte[] key,
+                      FileAttachment senderAttachment, Set<String> allowedPeerIds) {
+            this.file = file;
+            this.fileSize = fileSize;
+            this.encrypted = encrypted;
+            this.key = key;
+            this.senderAttachment = senderAttachment;
+            this.allowedPeerIds = allowedPeerIds;
+        }
     }
 
     private final String myId;
     private volatile String myName;
     private final Listener listener;
+    private volatile Path transferDir = Paths.get(System.getProperty("java.io.tmpdir"), "aero-transfers");
 
     private final Map<String, Peer> peers = new ConcurrentHashMap<>();
     private final Set<String> manualEndpoints = ConcurrentHashMap.newKeySet();
+    private final Map<String, OutgoingOffer> offeredFiles = new ConcurrentHashMap<>();
     private final ExecutorService connectionPool = Executors.newCachedThreadPool(r -> {
         Thread t = new Thread(r, "quickchat-conn");
         t.setDaemon(true);
@@ -109,6 +161,16 @@ public class PeerNetwork {
         if (myName != null && !myName.trim().isEmpty()) {
             this.myName = myName.trim();
         }
+    }
+
+    public void setTransferDir(Path dir) {
+        if (dir != null) {
+            this.transferDir = dir;
+        }
+    }
+
+    public Path getTransferDir() {
+        return transferDir;
     }
 
     public int getMyPort() {
@@ -196,6 +258,7 @@ public class PeerNetwork {
 
     public void stop() {
         running = false;
+        offeredFiles.clear();
         scheduler.shutdownNow();
         connectionPool.shutdownNow();
         closeQuietly(serverSocket);
@@ -310,6 +373,305 @@ public class PeerNetwork {
                 groupId);
     }
 
+    /**
+     * Sends a lightweight file offer to a peer without pushing payload bytes automatically.
+     * The receiver chooses whether and where to download the file via {@link #downloadOfferedFileAsync}.
+     */
+    public void sendFileAsync(Peer peer, Path file, FileAttachment attachment, String caption) {
+        if (peer == null || file == null || attachment == null) {
+            if (attachment != null) {
+                attachment.setStatus(FileAttachment.Status.FAILED);
+            }
+            return;
+        }
+        connectionPool.submit(() -> {
+            if (attachment.isCancelled()) {
+                attachment.setStatus(FileAttachment.Status.CANCELLED);
+                return;
+            }
+            String safeCaption = caption == null ? "" : caption;
+            long fileSize = attachment.getFileSize();
+            String transferId = attachment.getTransferId();
+            OutgoingOffer offer = new OutgoingOffer(
+                    file, fileSize, false, null, attachment, Set.of(peer.getId()));
+            offeredFiles.put(transferId, offer);
+
+            String header = String.join("|",
+                    "FOFFER",
+                    myId,
+                    encode(myName),
+                    String.valueOf(myPort),
+                    transferId,
+                    attachment.isImage() ? "1" : "0",
+                    encode(attachment.getFileName()),
+                    String.valueOf(fileSize),
+                    encode(safeCaption));
+
+            boolean ok = sendOfferHeader(peer, header, attachment);
+            if (attachment.isCancelled()) {
+                offer.revoked = true;
+                offeredFiles.remove(transferId, offer);
+                attachment.setStatus(FileAttachment.Status.CANCELLED);
+            } else if (ok) {
+                attachment.setBytesTransferred(fileSize);
+                attachment.setStatus(FileAttachment.Status.COMPLETED);
+            } else {
+                offer.revoked = true;
+                offeredFiles.remove(transferId, offer);
+                attachment.setStatus(FileAttachment.Status.FAILED);
+            }
+        });
+    }
+
+    /**
+     * Sends a lightweight file offer to every online member of a group without pushing
+     * payload bytes automatically.
+     */
+    public void sendGroupFileAsync(ChatGroup group, Path file, FileAttachment attachment, String caption) {
+        if (group == null || file == null || attachment == null) {
+            if (attachment != null) {
+                attachment.setStatus(FileAttachment.Status.FAILED);
+            }
+            return;
+        }
+        connectionPool.submit(() -> {
+            if (attachment.isCancelled()) {
+                attachment.setStatus(FileAttachment.Status.CANCELLED);
+                return;
+            }
+            List<Peer> targets = new ArrayList<>();
+            Set<String> allowedIds = new HashSet<>();
+            for (String memberId : group.getMemberIds()) {
+                if (myId.equals(memberId)) continue;
+                allowedIds.add(memberId);
+                Peer peer = peers.get(memberId);
+                if (peer != null) {
+                    targets.add(peer);
+                }
+            }
+            if (targets.isEmpty()) {
+                attachment.setStatus(FileAttachment.Status.FAILED);
+                return;
+            }
+
+            boolean encrypted = group.isPasswordProtected();
+            byte[] key = encrypted ? group.getPasswordKeyBytes() : null;
+            if (encrypted && key == null) {
+                attachment.setStatus(FileAttachment.Status.FAILED);
+                return;
+            }
+
+            String safeCaption = caption == null ? "" : caption;
+            long fileSize = attachment.getFileSize();
+            String members = serializeGroupMembers(group);
+            String transferId = attachment.getTransferId();
+
+            String header;
+            if (encrypted) {
+                try {
+                    String metaPlain = (attachment.isImage() ? "1" : "0") + "|"
+                            + encode(attachment.getFileName()) + "|" + encode(safeCaption);
+                    GroupCrypto.Encrypted encMeta = GroupCrypto.encrypt(key, metaPlain);
+                    header = String.join("|",
+                            "GOFFER",
+                            myId,
+                            encode(myName),
+                            String.valueOf(myPort),
+                            group.getId(),
+                            encode(group.getName()),
+                            members,
+                            group.getPasswordSalt(),
+                            group.getPasswordCheck(),
+                            transferId,
+                            "0",
+                            encMeta.getIv(),
+                            String.valueOf(fileSize),
+                            encMeta.getCipherText());
+                } catch (GeneralSecurityException e) {
+                    attachment.setStatus(FileAttachment.Status.FAILED);
+                    return;
+                }
+            } else {
+                header = String.join("|",
+                        "GOFFER",
+                        myId,
+                        encode(myName),
+                        String.valueOf(myPort),
+                        group.getId(),
+                        encode(group.getName()),
+                        members,
+                        "",
+                        "",
+                        transferId,
+                        attachment.isImage() ? "1" : "0",
+                        encode(attachment.getFileName()),
+                        String.valueOf(fileSize),
+                        encode(safeCaption));
+            }
+
+            OutgoingOffer offer = new OutgoingOffer(
+                    file, fileSize, encrypted, key, attachment, Set.copyOf(allowedIds));
+            offeredFiles.put(transferId, offer);
+
+            AtomicInteger delivered = new AtomicInteger(0);
+            CountDownLatch latch = new CountDownLatch(targets.size());
+
+            for (Peer target : targets) {
+                connectionPool.submit(() -> {
+                    try {
+                        if (sendOfferHeader(target, header, attachment)) {
+                            delivered.incrementAndGet();
+                        }
+                    } finally {
+                        latch.countDown();
+                    }
+                });
+            }
+
+            try {
+                latch.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+
+            if (attachment.isCancelled()) {
+                offer.revoked = true;
+                offeredFiles.remove(transferId, offer);
+                attachment.setStatus(FileAttachment.Status.CANCELLED);
+            } else if (delivered.get() > 0) {
+                attachment.setBytesTransferred(fileSize);
+                attachment.setStatus(FileAttachment.Status.COMPLETED);
+            } else {
+                offer.revoked = true;
+                offeredFiles.remove(transferId, offer);
+                attachment.setStatus(FileAttachment.Status.FAILED);
+            }
+        });
+    }
+
+    /**
+     * Pulls an offered file directly into {@code destination} when requested manually by the user.
+     */
+    public void downloadOfferedFileAsync(FileAttachment attachment, Path destination,
+                                         byte[] groupKey, Consumer<DownloadOutcome> onComplete) {
+        if (attachment == null || destination == null || !attachment.canDownloadFromPeer()) {
+            if (onComplete != null) {
+                onComplete.accept(DownloadOutcome.FAILED);
+            }
+            return;
+        }
+        if (attachment.isEncryptedOffer() && groupKey == null) {
+            if (onComplete != null) {
+                onComplete.accept(DownloadOutcome.FAILED);
+            }
+            return;
+        }
+        if (!attachment.resetForTransfer()) {
+            return;
+        }
+        connectionPool.submit(() -> {
+            DownloadOutcome outcome = DownloadOutcome.FAILED;
+            boolean openedDestination = false;
+            try {
+                Peer live = peers.get(attachment.getOfferPeerId());
+                String host = live != null ? live.getHost() : attachment.getOfferHost();
+                int port = live != null ? live.getPort() : attachment.getOfferPort();
+
+                try (Socket socket = new Socket()) {
+                    attachment.registerActiveResource(socket);
+                    try {
+                        socket.connect(new InetSocketAddress(host, port), 3000);
+                        socket.setSoTimeout(FILE_SOCKET_TIMEOUT_MS);
+
+                        OutputStream rawOut = socket.getOutputStream();
+                        String req = String.join("|",
+                                "FGET",
+                                myId,
+                                String.valueOf(myPort),
+                                attachment.getTransferId());
+                        rawOut.write((req + "\n").getBytes(StandardCharsets.UTF_8));
+                        rawOut.flush();
+
+                        BufferedInputStream netIn = new BufferedInputStream(
+                                socket.getInputStream(), FILE_BUFFER_SIZE);
+                        String resp = readLineUtf8(netIn, 1024);
+                        if (!"OK".equals(resp)) {
+                            outcome = "ERR|UNAVAILABLE".equals(resp)
+                                    ? DownloadOutcome.UNAVAILABLE
+                                    : DownloadOutcome.FAILED;
+                        } else if (attachment.isCancelled()) {
+                            outcome = DownloadOutcome.CANCELLED;
+                        } else {
+                            Path parent = destination.getParent();
+                            if (parent != null) {
+                                Files.createDirectories(parent);
+                            }
+                            openedDestination = true;
+                            boolean ok = attachment.isEncryptedOffer()
+                                    ? receiveEncryptedToFile(socket, netIn, destination, groupKey, attachment)
+                                    : receivePlainToFile(netIn, destination, attachment.getFileSize(), attachment);
+                            if (ok && !attachment.isCancelled()) {
+                                outcome = DownloadOutcome.COMPLETED;
+                            } else if (attachment.isCancelled()) {
+                                outcome = DownloadOutcome.CANCELLED;
+                            } else {
+                                outcome = DownloadOutcome.FAILED;
+                            }
+                        }
+                    } finally {
+                        attachment.unregisterActiveResource(socket);
+                    }
+                }
+            } catch (IOException e) {
+                outcome = attachment.isCancelled() ? DownloadOutcome.CANCELLED : DownloadOutcome.FAILED;
+            }
+
+            if (outcome == DownloadOutcome.COMPLETED) {
+                attachment.setLocalPath(destination);
+                attachment.setBytesTransferred(attachment.getFileSize());
+                attachment.setStatus(FileAttachment.Status.COMPLETED);
+            } else {
+                if (openedDestination) {
+                    try {
+                        Files.deleteIfExists(destination);
+                    } catch (IOException ignored) {
+                    }
+                }
+                attachment.setLocalPath(null);
+                attachment.setStatus(outcome == DownloadOutcome.CANCELLED
+                        ? FileAttachment.Status.CANCELLED
+                        : FileAttachment.Status.FAILED);
+            }
+            if (onComplete != null) {
+                onComplete.accept(outcome);
+            }
+        });
+    }
+
+    private boolean sendOfferHeader(Peer peer, String header, FileAttachment attachment) {
+        if (attachment.isCancelled()) {
+            return false;
+        }
+        try (Socket socket = new Socket()) {
+            attachment.registerActiveResource(socket);
+            try {
+                socket.connect(new InetSocketAddress(peer.getHost(), peer.getPort()), 2000);
+                socket.setSoTimeout(OFFER_ACK_TIMEOUT_MS);
+
+                OutputStream rawOut = socket.getOutputStream();
+                rawOut.write((header + "\n").getBytes(StandardCharsets.UTF_8));
+                rawOut.flush();
+
+                String ack = readLineUtf8(socket.getInputStream(), 1024);
+                return !attachment.isCancelled() && "OK".equals(ack);
+            } finally {
+                attachment.unregisterActiveResource(socket);
+            }
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
     private boolean sendRaw(Peer peer, String payload) {
         try (Socket socket = new Socket()) {
             socket.connect(new InetSocketAddress(peer.getHost(), peer.getPort()), 1200);
@@ -362,15 +724,16 @@ public class PeerNetwork {
     }
 
     private void handleConnection(Socket socket) {
-        try (Socket s = socket;
-             BufferedReader in = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8));
-             PrintWriter out = new PrintWriter(s.getOutputStream(), true, StandardCharsets.UTF_8)) {
-            String line = in.readLine();
+        try (Socket s = socket) {
+            BufferedInputStream in = new BufferedInputStream(s.getInputStream(), FILE_BUFFER_SIZE);
+            OutputStream rawOut = s.getOutputStream();
+            String line = readLineUtf8(in, MAX_HEADER_LINE_BYTES);
             if (line == null) return;
 
             String remoteHost = s.getInetAddress().getHostAddress();
             if ("PING".equals(line)) {
-                out.println(buildHelloPayload());
+                rawOut.write((buildHelloPayload() + "\n").getBytes(StandardCharsets.UTF_8));
+                rawOut.flush();
                 return;
             }
 
@@ -441,9 +804,267 @@ public class PeerNetwork {
 
                 Peer sender = upsertPeer(senderId, senderName, remoteHost, senderPort);
                 listener.onGroupDeleted(sender, groupId);
+            } else if ("FOFFER".equals(parts[0]) && parts.length >= 9) {
+                handleIncomingFileOffer(rawOut, remoteHost, parts);
+            } else if ("GOFFER".equals(parts[0]) && parts.length >= 14) {
+                handleIncomingGroupFileOffer(rawOut, remoteHost, parts);
+            } else if ("FGET".equals(parts[0]) && parts.length >= 4) {
+                handleIncomingFileFetch(s, rawOut, parts);
             }
         } catch (Exception ignored) {
         }
+    }
+
+    private void handleIncomingFileOffer(OutputStream rawOut, String remoteHost, String[] parts)
+            throws IOException {
+        String senderId = parts[1];
+        String senderName = decode(parts[2]);
+        int senderPort = Integer.parseInt(parts[3]);
+        String transferId = parts[4];
+        if (!transferId.matches(ID_PATTERN)) return;
+
+        boolean isImage = "1".equals(parts[5]);
+        String fileName = FileAttachment.sanitizeFileName(decode(parts[6]));
+        long fileSize = Long.parseLong(parts[7]);
+        if (fileSize < 0) return;
+        String caption = ChatMessage.truncate(decode(parts[8]));
+
+        Peer sender = upsertPeer(senderId, senderName, remoteHost, senderPort);
+        FileAttachment attachment = FileAttachment.incomingOffer(transferId, fileName, fileSize, isImage);
+        attachment.setOfferSource(sender.getId(), remoteHost, senderPort, null, false);
+        ChatMessage msg = new ChatMessage(sender.getId(), sender.getName(), caption, true, attachment);
+
+        rawOut.write("OK\n".getBytes(StandardCharsets.UTF_8));
+        rawOut.flush();
+        listener.onFileOffered(sender, msg);
+    }
+
+    private void handleIncomingGroupFileOffer(OutputStream rawOut, String remoteHost, String[] parts)
+            throws IOException {
+        String senderId = parts[1];
+        String senderName = decode(parts[2]);
+        int senderPort = Integer.parseInt(parts[3]);
+        String groupId = parts[4];
+        if (!groupId.matches(ID_PATTERN)) return;
+
+        String groupName = decode(parts[5]);
+        String encodedMembers = parts[6];
+        String salt = parts[7];
+        String check = parts[8];
+        String transferId = parts[9];
+        if (!transferId.matches(ID_PATTERN)) return;
+
+        boolean encrypted = !salt.isEmpty() && !check.isEmpty();
+        long fileSize = Long.parseLong(parts[12]);
+        if (fileSize < 0) return;
+
+        Peer sender = upsertPeer(senderId, senderName, remoteHost, senderPort);
+        ChatGroup group = new ChatGroup(groupId, groupName);
+        group.setPasswordData(salt, check, "");
+        parseGroupMembers(encodedMembers, group);
+        group.addMember(sender.getId(), sender.getName());
+
+        FileAttachment attachment;
+        ChatMessage msg;
+        if (encrypted) {
+            String metaIv = parts[11];
+            String metaCipher = parts[13];
+            attachment = FileAttachment.encryptedIncomingOffer(transferId, fileSize, metaIv, metaCipher);
+            attachment.setOfferSource(sender.getId(), remoteHost, senderPort, groupId, true);
+            msg = ChatMessage.encryptedFileIncoming(groupId, sender.getName(), attachment);
+        } else {
+            boolean isImage = "1".equals(parts[10]);
+            String fileName = FileAttachment.sanitizeFileName(decode(parts[11]));
+            String caption = ChatMessage.truncate(decode(parts[13]));
+            attachment = FileAttachment.incomingOffer(transferId, fileName, fileSize, isImage);
+            attachment.setOfferSource(sender.getId(), remoteHost, senderPort, groupId, false);
+            msg = new ChatMessage(groupId, sender.getName(), caption, true, attachment);
+        }
+
+        if (!listener.onGroupFileOffered(sender, group, msg)) {
+            return;
+        }
+        rawOut.write("OK\n".getBytes(StandardCharsets.UTF_8));
+        rawOut.flush();
+    }
+
+    private void handleIncomingFileFetch(Socket s, OutputStream rawOut, String[] parts) throws IOException {
+        String requesterId = parts[1];
+        String transferId = parts[3];
+        if (!transferId.matches(ID_PATTERN) || !requesterId.matches(ID_PATTERN)) {
+            return;
+        }
+
+        OutgoingOffer offer = offeredFiles.get(transferId);
+        if (offer == null) {
+            rawOut.write("ERR|UNAVAILABLE\n".getBytes(StandardCharsets.UTF_8));
+            rawOut.flush();
+            return;
+        }
+
+        synchronized (offer) {
+            if (offer.revoked
+                    || offer.senderAttachment.isCancelled()
+                    || !offer.allowedPeerIds.contains(requesterId)
+                    || !Files.isRegularFile(offer.file)) {
+                rawOut.write("ERR|UNAVAILABLE\n".getBytes(StandardCharsets.UTF_8));
+                rawOut.flush();
+                return;
+            }
+            if (offer.activeDownloads.getAndIncrement() == 0) {
+                offer.senderAttachment.resetForTransfer();
+            }
+        }
+
+        s.setSoTimeout(FILE_SOCKET_TIMEOUT_MS);
+        offer.senderAttachment.registerActiveResource(s);
+        try {
+            OutputStream bufOut = new BufferedOutputStream(rawOut, FILE_BUFFER_SIZE);
+            bufOut.write("OK\n".getBytes(StandardCharsets.UTF_8));
+            bufOut.flush();
+
+            boolean ok = offer.encrypted
+                    ? streamEncryptedBodyToSocket(s, bufOut, offer)
+                    : streamPlainBodyToSocket(bufOut, offer);
+            if (ok && !offer.senderAttachment.isCancelled()) {
+                bufOut.flush();
+            }
+        } catch (IOException ignored) {
+        } finally {
+            offer.senderAttachment.unregisterActiveResource(s);
+            synchronized (offer) {
+                int remaining = offer.activeDownloads.decrementAndGet();
+                if (offer.senderAttachment.isCancelled()) {
+                    offer.revoked = true;
+                    offeredFiles.remove(transferId, offer);
+                    offer.senderAttachment.setStatus(FileAttachment.Status.CANCELLED);
+                } else if (remaining == 0) {
+                    offer.senderAttachment.setBytesTransferred(offer.fileSize);
+                    offer.senderAttachment.setStatus(FileAttachment.Status.COMPLETED);
+                }
+            }
+        }
+    }
+
+    private boolean streamPlainBodyToSocket(OutputStream out, OutgoingOffer offer) throws IOException {
+        byte[] buffer = new byte[FILE_BUFFER_SIZE];
+        long totalSent = 0L;
+        long lastNotify = 0L;
+        try (InputStream fileIn = new BufferedInputStream(Files.newInputStream(offer.file), FILE_BUFFER_SIZE)) {
+            while (totalSent < offer.fileSize) {
+                if (offer.senderAttachment.isCancelled()) {
+                    return false;
+                }
+                int maxRead = (int) Math.min(buffer.length, offer.fileSize - totalSent);
+                int read = fileIn.read(buffer, 0, maxRead);
+                if (read == -1) {
+                    return false;
+                }
+                out.write(buffer, 0, read);
+                totalSent += read;
+                long now = System.currentTimeMillis();
+                if (now - lastNotify >= 80 || totalSent == offer.fileSize) {
+                    lastNotify = now;
+                    offer.senderAttachment.setBytesTransferred(totalSent);
+                }
+            }
+        }
+        return !offer.senderAttachment.isCancelled();
+    }
+
+    private boolean streamEncryptedBodyToSocket(Socket socket, OutputStream out, OutgoingOffer offer)
+            throws IOException {
+        long[] lastNotify = {0L};
+        try (InputStream fileIn = new BufferedInputStream(Files.newInputStream(offer.file), FILE_BUFFER_SIZE)) {
+            GroupCrypto.encryptStream(offer.key, fileIn, out, sent -> {
+                if (offer.senderAttachment.isCancelled()) {
+                    closeQuietly(socket);
+                    return;
+                }
+                long now = System.currentTimeMillis();
+                if (now - lastNotify[0] >= 80 || sent == offer.fileSize) {
+                    lastNotify[0] = now;
+                    offer.senderAttachment.setBytesTransferred(sent);
+                }
+            });
+            return !offer.senderAttachment.isCancelled();
+        } catch (GeneralSecurityException e) {
+            return false;
+        }
+    }
+
+    private boolean receivePlainToFile(InputStream in, Path targetFile, long expectedSize,
+                                       FileAttachment attachment) {
+        byte[] buffer = new byte[FILE_BUFFER_SIZE];
+        long totalRead = 0L;
+        long lastNotify = 0L;
+        try (OutputStream fileOut = new BufferedOutputStream(Files.newOutputStream(targetFile), FILE_BUFFER_SIZE)) {
+            while (totalRead < expectedSize) {
+                if (attachment.isCancelled()) {
+                    return false;
+                }
+                int maxRead = (int) Math.min(buffer.length, expectedSize - totalRead);
+                int read = in.read(buffer, 0, maxRead);
+                if (read == -1) {
+                    return false;
+                }
+                fileOut.write(buffer, 0, read);
+                totalRead += read;
+                long now = System.currentTimeMillis();
+                if (now - lastNotify >= 80 || totalRead == expectedSize) {
+                    lastNotify = now;
+                    attachment.setBytesTransferred(totalRead);
+                }
+            }
+            fileOut.flush();
+            return !attachment.isCancelled();
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    private boolean receiveEncryptedToFile(Socket socket, InputStream netIn, Path destination,
+                                           byte[] groupKey, FileAttachment attachment) {
+        long[] lastNotify = {0L};
+        try (OutputStream fileOut = new BufferedOutputStream(Files.newOutputStream(destination), FILE_BUFFER_SIZE)) {
+            GroupCrypto.decryptStream(groupKey, netIn, fileOut, written -> {
+                if (attachment.isCancelled()) {
+                    closeQuietly(socket);
+                    return;
+                }
+                long now = System.currentTimeMillis();
+                if (now - lastNotify[0] >= 80 || written == attachment.getFileSize()) {
+                    lastNotify[0] = now;
+                    attachment.setBytesTransferred(written);
+                }
+            });
+            fileOut.flush();
+            return !attachment.isCancelled();
+        } catch (IOException | GeneralSecurityException e) {
+            return false;
+        }
+    }
+
+    private static String readLineUtf8(InputStream in, int maxBytes) throws IOException {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream(256);
+        int b;
+        boolean any = false;
+        while ((b = in.read()) != -1) {
+            any = true;
+            if (b == '\n') {
+                break;
+            }
+            if (b != '\r') {
+                if (baos.size() >= maxBytes) {
+                    throw new IOException("Header line too long");
+                }
+                baos.write(b);
+            }
+        }
+        if (!any && baos.size() == 0) {
+            return null;
+        }
+        return baos.toString(StandardCharsets.UTF_8);
     }
 
     private void startMulticastListener() {
@@ -557,10 +1178,10 @@ public class PeerNetwork {
         try (Socket socket = new Socket()) {
             socket.connect(new InetSocketAddress(host, port), timeoutMs);
             socket.setSoTimeout(timeoutMs);
-            PrintWriter out = new PrintWriter(socket.getOutputStream(), true, StandardCharsets.UTF_8);
-            BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
-            out.println("PING");
-            String response = in.readLine();
+            OutputStream out = socket.getOutputStream();
+            out.write("PING\n".getBytes(StandardCharsets.UTF_8));
+            out.flush();
+            String response = readLineUtf8(socket.getInputStream(), MAX_HEADER_LINE_BYTES);
             if (response != null) {
                 handleHello(response, host);
                 return true;

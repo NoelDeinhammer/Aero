@@ -5,6 +5,7 @@ import com.quickchat.hotkey.GlobalHotkeyListener;
 import com.quickchat.i18n.I18n;
 import com.quickchat.model.ChatGroup;
 import com.quickchat.model.ChatMessage;
+import com.quickchat.model.FileAttachment;
 import com.quickchat.model.Peer;
 import com.quickchat.net.PeerNetwork;
 import com.quickchat.ui.ChatPopupWindow;
@@ -26,9 +27,13 @@ import java.awt.SystemTray;
 import java.awt.TrayIcon;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 
 /**
  * Entry point for Aero.
@@ -121,7 +126,65 @@ public class Main {
                         }
                     });
                 }
+
+                @Override
+                public void onFileOffered(Peer sender, ChatMessage message) {
+                    SwingUtilities.invokeLater(() -> {
+                        ChatPopupWindow win = windowRef.get();
+                        NotificationPopup notif = notifRef.get();
+                        if (win == null) return;
+
+                        win.addIncomingMessage(sender, message);
+                        if (notif != null && settings.isNotificationsEnabled()
+                                && !win.isChattingWith(sender)) {
+                            notif.showNotification(
+                                    I18n.t(I18n.Key.NEW_MESSAGE_TITLE, sender.getName()),
+                                    formatAttachmentPreview(message, false),
+                                    () -> win.openChatWith(sender)
+                            );
+                        }
+                    });
+                }
+
+                @Override
+                public boolean onGroupFileOffered(Peer sender, ChatGroup group, ChatMessage message) {
+                    if (settings.isGroupDeleted(group.getId())) {
+                        SwingUtilities.invokeLater(() -> {
+                            ChatPopupWindow win = windowRef.get();
+                            if (win != null) {
+                                win.handleIncomingGroupFileOffered(sender, group, message);
+                            }
+                        });
+                        return false;
+                    }
+                    SwingUtilities.invokeLater(() -> {
+                        ChatPopupWindow win = windowRef.get();
+                        NotificationPopup notif = notifRef.get();
+                        if (win == null) return;
+
+                        ChatGroup local = win.handleIncomingGroupFileOffered(sender, group, message);
+                        if (local == null) return;
+                        if (notif != null && settings.isNotificationsEnabled()
+                                && !win.isChattingWithGroup(local)) {
+                            boolean locked = local.isPasswordProtected() && !local.hasPasswordKey();
+                            String title = locked
+                                    ? I18n.t(I18n.Key.GROUP_LOCKED_NOTIFICATION_TITLE, local.getName())
+                                    : local.getName() + " • " + sender.getName();
+                            notif.showNotification(
+                                    title,
+                                    formatAttachmentPreview(message, locked),
+                                    () -> win.openGroupChat(local)
+                            );
+                        }
+                    });
+                    return true;
+                }
             });
+
+            Path sessionTransferDir = createSessionTransferDir();
+            if (sessionTransferDir != null) {
+                network.setTransferDir(sessionTransferDir);
+            }
 
             ChatPopupWindow chatWindow = new ChatPopupWindow(network, settings);
             windowRef.set(chatWindow);
@@ -171,6 +234,7 @@ public class Main {
                 chatWindow.saveHistoryNow();
                 hotkeyListener.stop();
                 network.stop();
+                deleteDirectoryQuietly(sessionTransferDir);
             }, "aero-shutdown"));
 
             hotkeyListener.start();
@@ -225,6 +289,7 @@ public class Main {
             chatWindow.saveHistoryNow();
             hotkeyListener.stop();
             network.stop();
+            deleteDirectoryQuietly(network.getTransferDir());
             TrayIcon icon = trayRef.get();
             if (icon != null) {
                 SystemTray.getSystemTray().remove(icon);
@@ -257,6 +322,44 @@ public class Main {
 
         g.dispose();
         return img;
+    }
+
+    private static String formatAttachmentPreview(ChatMessage message, boolean locked) {
+        if (locked) {
+            return I18n.t(I18n.Key.GROUP_LOCKED_NOTIFICATION_PREVIEW);
+        }
+        FileAttachment att = message.getAttachment();
+        if (att == null) {
+            return message.getText();
+        }
+        if (att.isImage()) {
+            return I18n.t(I18n.Key.NOTIFICATION_IMAGE, att.getFileName());
+        }
+        return I18n.t(I18n.Key.NOTIFICATION_FILE,
+                att.getFileName(), FileAttachment.formatSize(att.getFileSize()));
+    }
+
+    private static Path createSessionTransferDir() {
+        try {
+            return Files.createTempDirectory("aero-transfers-");
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    private static void deleteDirectoryQuietly(Path dir) {
+        if (dir == null || !Files.exists(dir)) {
+            return;
+        }
+        try (Stream<Path> walk = Files.walk(dir)) {
+            walk.sorted(Comparator.reverseOrder()).forEach(path -> {
+                try {
+                    Files.deleteIfExists(path);
+                } catch (IOException ignored) {
+                }
+            });
+        } catch (IOException ignored) {
+        }
     }
 
     /**
