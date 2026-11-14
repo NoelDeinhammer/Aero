@@ -17,6 +17,13 @@ public final class Theme {
 
     public static final Color ACCENT = new Color(88, 101, 242);
     public static final Color ACCENT_HOVER = new Color(108, 120, 255);
+    public static final Color BTN_DARK = new Color(26, 28, 35);
+    public static final Color BTN_DARK_HOVER = new Color(40, 43, 54);
+    public static final Color BTN_DARK_BORDER = new Color(54, 57, 70);
+    public static final Color BTN_ACCENT = new Color(56, 66, 168);
+    public static final Color BTN_ACCENT_HOVER = new Color(72, 84, 198);
+    public static final Color BTN_DANGER = new Color(138, 44, 52);
+    public static final Color BTN_DANGER_HOVER = new Color(168, 54, 64);
     public static final Color ONLINE_DOT = new Color(59, 165, 93);
     public static final Color DANGER = new Color(235, 95, 95);
     public static final Color BORDER = new Color(56, 59, 71);

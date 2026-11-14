@@ -128,24 +128,14 @@ public class Main {
                 }
 
                 @Override
-                public void onIncomingFileStarted(Peer sender, ChatMessage message) {
-                    SwingUtilities.invokeLater(() -> {
-                        ChatPopupWindow win = windowRef.get();
-                        if (win != null) {
-                            win.handleIncomingFileStarted(sender, message);
-                        }
-                    });
-                }
-
-                @Override
-                public void onFileCompleted(Peer sender, ChatMessage message, boolean success) {
+                public void onFileOffered(Peer sender, ChatMessage message) {
                     SwingUtilities.invokeLater(() -> {
                         ChatPopupWindow win = windowRef.get();
                         NotificationPopup notif = notifRef.get();
                         if (win == null) return;
 
-                        win.handleIncomingFileCompleted(sender, message, success);
-                        if (success && notif != null && settings.isNotificationsEnabled()
+                        win.addIncomingMessage(sender, message);
+                        if (notif != null && settings.isNotificationsEnabled()
                                 && !win.isChattingWith(sender)) {
                             notif.showNotification(
                                     I18n.t(I18n.Key.NEW_MESSAGE_TITLE, sender.getName()),
@@ -157,49 +147,37 @@ public class Main {
                 }
 
                 @Override
-                public boolean onIncomingGroupFileStarted(Peer sender, ChatGroup group, ChatMessage message) {
+                public boolean onGroupFileOffered(Peer sender, ChatGroup group, ChatMessage message) {
                     if (settings.isGroupDeleted(group.getId())) {
                         SwingUtilities.invokeLater(() -> {
                             ChatPopupWindow win = windowRef.get();
                             if (win != null) {
-                                win.handleIncomingGroupFileStarted(sender, group, message);
+                                win.handleIncomingGroupFileOffered(sender, group, message);
                             }
                         });
                         return false;
                     }
                     SwingUtilities.invokeLater(() -> {
                         ChatPopupWindow win = windowRef.get();
-                        if (win != null) {
-                            win.handleIncomingGroupFileStarted(sender, group, message);
-                        }
-                    });
-                    return true;
-                }
-
-                @Override
-                public void onGroupFileCompleted(Peer sender, ChatGroup group, ChatMessage message, boolean success) {
-                    SwingUtilities.invokeLater(() -> {
-                        ChatPopupWindow win = windowRef.get();
                         NotificationPopup notif = notifRef.get();
                         if (win == null) return;
 
-                        ChatGroup local = win.handleIncomingGroupFileCompleted(sender, group, message, success, () -> {
-                            if (success && notif != null && settings.isNotificationsEnabled()) {
-                                ChatGroup current = settings.getGroup(group.getId());
-                                if (current != null && !win.isChattingWithGroup(current)) {
-                                    boolean locked = current.isPasswordProtected() && !current.hasPasswordKey();
-                                    String title = locked
-                                            ? I18n.t(I18n.Key.GROUP_LOCKED_NOTIFICATION_TITLE, current.getName())
-                                            : current.getName() + " • " + sender.getName();
-                                    String preview = locked
-                                            ? I18n.t(I18n.Key.GROUP_LOCKED_NOTIFICATION_PREVIEW)
-                                            : formatAttachmentPreview(message, false);
-                                    notif.showNotification(title, preview, () -> win.openGroupChat(current));
-                                }
-                            }
-                        });
+                        ChatGroup local = win.handleIncomingGroupFileOffered(sender, group, message);
                         if (local == null) return;
+                        if (notif != null && settings.isNotificationsEnabled()
+                                && !win.isChattingWithGroup(local)) {
+                            boolean locked = local.isPasswordProtected() && !local.hasPasswordKey();
+                            String title = locked
+                                    ? I18n.t(I18n.Key.GROUP_LOCKED_NOTIFICATION_TITLE, local.getName())
+                                    : local.getName() + " • " + sender.getName();
+                            notif.showNotification(
+                                    title,
+                                    formatAttachmentPreview(message, locked),
+                                    () -> win.openGroupChat(local)
+                            );
+                        }
                     });
+                    return true;
                 }
             });
 

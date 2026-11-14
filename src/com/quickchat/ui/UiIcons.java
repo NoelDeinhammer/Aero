@@ -4,14 +4,19 @@ import javax.imageio.ImageIO;
 import javax.imageio.ImageReadParam;
 import javax.imageio.ImageReader;
 import javax.imageio.stream.ImageInputStream;
+import javax.swing.BorderFactory;
 import javax.swing.Icon;
 import javax.swing.ImageIcon;
+import javax.swing.JButton;
+import javax.swing.plaf.basic.BasicButtonUI;
 import java.awt.BasicStroke;
 import java.awt.Color;
 import java.awt.Component;
+import java.awt.Cursor;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.Image;
+import java.awt.Insets;
 import java.awt.RenderingHints;
 import java.awt.Toolkit;
 import java.awt.datatransfer.DataFlavor;
@@ -114,6 +119,58 @@ public final class UiIcons {
             g.drawRoundRect(off, off, boxW, boxH, 3, 3);
             g.drawRoundRect(off + Math.round(s * 0.2f), off + Math.round(s * 0.18f), boxW, boxH, 3, 3);
         });
+    }
+
+    public static Icon cancel(Color color, int size) {
+        return new VectorIcon(size, size, color, (g, w, h) -> {
+            g.setStroke(new BasicStroke(1.8f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            int pad = Math.max(3, Math.round(w * 0.26f));
+            g.drawLine(pad, pad, w - pad, h - pad);
+            g.drawLine(w - pad, pad, pad, h - pad);
+        });
+    }
+
+    /**
+     * Creates a dark rounded Swing button that bypasses light native Windows L&F chrome.
+     */
+    public static JButton darkButton(String text, Icon icon,
+                                     Color bg, Color hoverBg, Color borderColor,
+                                     Color fg, int arc) {
+        JButton btn = new JButton(text, icon) {
+            @Override
+            protected void paintComponent(Graphics g) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                Color fill = bg;
+                if (!isEnabled()) {
+                    fill = new Color(bg.getRed(), bg.getGreen(), bg.getBlue(), 140);
+                } else if (getModel().isPressed()) {
+                    fill = bg.darker();
+                } else if (getModel().isRollover() && hoverBg != null) {
+                    fill = hoverBg;
+                }
+                g2.setColor(fill);
+                g2.fillRoundRect(0, 0, getWidth(), getHeight(), arc, arc);
+                if (borderColor != null) {
+                    g2.setColor(borderColor);
+                    g2.drawRoundRect(0, 0, getWidth() - 1, getHeight() - 1, arc, arc);
+                }
+                g2.dispose();
+                super.paintComponent(g);
+            }
+        };
+        btn.setUI(new BasicButtonUI());
+        btn.setOpaque(false);
+        btn.setContentAreaFilled(false);
+        btn.setBorderPainted(false);
+        btn.setFocusPainted(false);
+        btn.setRolloverEnabled(true);
+        btn.setForeground(fg);
+        btn.setFont(Theme.FONT_SMALL);
+        btn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        btn.setMargin(new Insets(4, 8, 4, 8));
+        btn.setBorder(BorderFactory.createEmptyBorder(4, 8, 4, 8));
+        return btn;
     }
 
     /**

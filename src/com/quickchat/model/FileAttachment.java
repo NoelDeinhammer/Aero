@@ -1,7 +1,11 @@
 package com.quickchat.model;
 
+import java.io.Closeable;
+import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
@@ -11,9 +15,11 @@ import java.util.UUID;
  */
 public class FileAttachment {
     public enum Status {
+        AVAILABLE,
         TRANSFERRING,
         COMPLETED,
-        FAILED
+        FAILED,
+        CANCELLED
     }
 
     private static final Set<String> IMAGE_EXTENSIONS = Set.of(
@@ -25,18 +31,27 @@ public class FileAttachment {
     private volatile long fileSize;
     private volatile boolean image;
     private volatile Path localPath;
-    private volatile Path encryptedPath;
     private volatile String metaIv;
     private volatile String metaCipherText;
     private volatile boolean encryptedPendingUnlock;
     private volatile Status status;
     private volatile long bytesTransferred;
+    private volatile boolean cancelled;
+    private final List<Closeable> activeResources = new ArrayList<>();
+    private volatile boolean saving;
+    private volatile boolean saveCancelled;
+    private volatile long saveBytesCopied;
     private volatile Runnable changeListener;
+    private volatile String offerPeerId;
+    private volatile String offerHost;
+    private volatile int offerPort;
+    private volatile String offerGroupId;
+    private volatile boolean encryptedOffer;
 
     public FileAttachment(String transferId, String fileName, long fileSize,
                           boolean image, Path localPath, Status status) {
         this.transferId = (transferId == null || transferId.isBlank())
-                ? UUID.randomUUID().toString().replace("-", "").substring(0, 12)
+                ? UUID.randomUUID().toString().replace("-", "").substring(0, 24)
                 : transferId;
         this.fileName = sanitizeFileName(fileName);
         this.fileSize = Math.max(0L, fileSize);
@@ -45,16 +60,57 @@ public class FileAttachment {
         this.status = status;
     }
 
-    public static FileAttachment encryptedIncoming(String transferId, long fileSize,
-                                                   Path encryptedPath,
-                                                   String metaIv, String metaCipherText) {
+    public static FileAttachment incomingOffer(String transferId, String fileName,
+                                               long fileSize, boolean image) {
+        return new FileAttachment(transferId, fileName, fileSize, image, null, Status.AVAILABLE);
+    }
+
+    public static FileAttachment encryptedIncomingOffer(String transferId, long fileSize,
+                                                        String metaIv, String metaCipherText) {
         FileAttachment att = new FileAttachment(transferId, "encrypted.dat", fileSize,
-                false, null, Status.TRANSFERRING);
-        att.encryptedPath = encryptedPath;
+                false, null, Status.AVAILABLE);
         att.metaIv = metaIv;
         att.metaCipherText = metaCipherText;
         att.encryptedPendingUnlock = true;
+        att.encryptedOffer = true;
         return att;
+    }
+
+    public void setOfferSource(String peerId, String host, int port,
+                               String groupId, boolean encryptedOffer) {
+        this.offerPeerId = peerId;
+        this.offerHost = host;
+        this.offerPort = port;
+        this.offerGroupId = groupId;
+        this.encryptedOffer = encryptedOffer;
+    }
+
+    public String getOfferPeerId() {
+        return offerPeerId;
+    }
+
+    public String getOfferHost() {
+        return offerHost;
+    }
+
+    public int getOfferPort() {
+        return offerPort;
+    }
+
+    public String getOfferGroupId() {
+        return offerGroupId;
+    }
+
+    public boolean isEncryptedOffer() {
+        return encryptedOffer;
+    }
+
+    public boolean canDownloadFromPeer() {
+        return !encryptedPendingUnlock
+                && offerPeerId != null
+                && !offerPeerId.isEmpty()
+                && offerHost != null
+                && offerPort > 0;
     }
 
     public String getTransferId() {
@@ -91,14 +147,6 @@ public class FileAttachment {
 
     public void setLocalPath(Path localPath) {
         this.localPath = localPath;
-    }
-
-    public Path getEncryptedPath() {
-        return encryptedPath;
-    }
-
-    public void setEncryptedPath(Path encryptedPath) {
-        this.encryptedPath = encryptedPath;
     }
 
     public String getMetaIv() {
@@ -141,6 +189,127 @@ public class FileAttachment {
             return status == Status.COMPLETED ? 100 : 0;
         }
         return (int) Math.min(100L, Math.max(0L, (bytesTransferred * 100L) / total));
+    }
+
+    public boolean isCancelled() {
+        return cancelled;
+    }
+
+    public void registerActiveResource(Closeable resource) {
+        if (resource == null) {
+            return;
+        }
+        boolean closeNow = false;
+        synchronized (activeResources) {
+            if (cancelled) {
+                closeNow = true;
+            } else {
+                activeResources.add(resource);
+            }
+        }
+        if (closeNow) {
+            closeQuietly(resource);
+        }
+    }
+
+    public void unregisterActiveResource(Closeable resource) {
+        if (resource == null) {
+            return;
+        }
+        synchronized (activeResources) {
+            activeResources.remove(resource);
+        }
+    }
+
+    /**
+     * Cancels an active network upload or incoming download and closes open sockets.
+     */
+    public void cancel() {
+        List<Closeable> toClose;
+        synchronized (activeResources) {
+            if (cancelled || status != Status.TRANSFERRING) {
+                return;
+            }
+            cancelled = true;
+            status = Status.CANCELLED;
+            toClose = new ArrayList<>(activeResources);
+            activeResources.clear();
+        }
+        for (Closeable c : toClose) {
+            closeQuietly(c);
+        }
+        notifyListener();
+    }
+
+    /**
+     * Resets cancellation/progress state before starting a manual download or active upload.
+     */
+    public boolean resetForTransfer() {
+        synchronized (activeResources) {
+            if (status == Status.TRANSFERRING) {
+                return false;
+            }
+            cancelled = false;
+            bytesTransferred = 0L;
+            activeResources.clear();
+            status = Status.TRANSFERRING;
+        }
+        notifyListener();
+        return true;
+    }
+
+    public boolean isSaving() {
+        return saving;
+    }
+
+    public boolean isSaveCancelled() {
+        return saveCancelled;
+    }
+
+    public int getSaveProgressPercent() {
+        long total = fileSize;
+        if (total <= 0L) {
+            return saving ? 0 : 100;
+        }
+        return (int) Math.min(100L, Math.max(0L, (saveBytesCopied * 100L) / total));
+    }
+
+    public synchronized boolean startSaving() {
+        if (saving) {
+            return false;
+        }
+        saving = true;
+        saveCancelled = false;
+        saveBytesCopied = 0L;
+        notifyListener();
+        return true;
+    }
+
+    public void updateSaveProgress(long bytesCopied) {
+        this.saveBytesCopied = Math.max(0L, bytesCopied);
+        notifyListener();
+    }
+
+    public synchronized void cancelSaving() {
+        if (!saving) {
+            return;
+        }
+        saveCancelled = true;
+        notifyListener();
+    }
+
+    public synchronized void finishSaving() {
+        saving = false;
+        saveCancelled = false;
+        saveBytesCopied = 0L;
+        notifyListener();
+    }
+
+    private static void closeQuietly(Closeable c) {
+        try {
+            c.close();
+        } catch (IOException ignored) {
+        }
     }
 
     public void setChangeListener(Runnable changeListener) {

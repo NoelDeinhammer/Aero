@@ -44,6 +44,7 @@ import javax.swing.text.AttributeSet;
 import javax.swing.text.BadLocationException;
 import javax.swing.text.DefaultEditorKit;
 import javax.swing.text.DocumentFilter;
+import javax.swing.text.JTextComponent;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.Color;
@@ -55,13 +56,20 @@ import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.GraphicsDevice;
 import java.awt.GraphicsEnvironment;
+import java.awt.GridBagLayout;
 import java.awt.Image;
 import java.awt.Insets;
 import java.awt.Point;
 import java.awt.Rectangle;
 import java.awt.Toolkit;
+import java.awt.datatransfer.Clipboard;
 import java.awt.datatransfer.DataFlavor;
 import java.awt.datatransfer.Transferable;
+import java.awt.dnd.DropTarget;
+import java.awt.dnd.DropTargetAdapter;
+import java.awt.dnd.DropTargetDragEvent;
+import java.awt.dnd.DropTargetDropEvent;
+import java.awt.dnd.DropTargetEvent;
 import java.awt.event.ActionEvent;
 import java.awt.event.InputEvent;
 import java.awt.event.KeyEvent;
@@ -71,11 +79,13 @@ import java.awt.geom.RoundRectangle2D;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
 import java.security.GeneralSecurityException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -87,7 +97,9 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TooManyListenersException;
 import java.util.UUID;
+import java.util.WeakHashMap;
 import java.util.function.Consumer;
 
 /**
@@ -133,10 +145,24 @@ public class ChatPopupWindow extends JDialog {
     private final JScrollPane messagesScroll;
     private final JTextField inputField = new JTextField();
     private final JLabel messageCounter = new JLabel();
-    private final JButton attachButton = new JButton();
+    private final JButton attachButton = UiIcons.darkButton(
+            null,
+            UiIcons.paperclip(Theme.TEXT_PRIMARY, 16),
+            Theme.BTN_DARK,
+            Theme.BTN_DARK_HOVER,
+            Theme.BTN_DARK_BORDER,
+            Theme.TEXT_PRIMARY,
+            8
+    );
     private final JPanel attachmentStrip = new JPanel();
+    private final JLabel dropBanner = new JLabel("", SwingConstants.CENTER);
     private final List<PendingAttachment> pendingAttachments = new ArrayList<>();
     private final Map<String, ImageIcon> inlineImageCache = new HashMap<>();
+    private final Map<FileAttachment, Runnable> attachmentRefreshCallbacks = new WeakHashMap<>();
+    private JPanel chatViewPanel;
+    private JPanel chatInputBar;
+    private TransferHandler fileDropHandler;
+    private Timer dropHighlightClearTimer;
 
     // Settings view
     private final JTextField displayNameField = new JTextField();
@@ -182,8 +208,8 @@ public class ChatPopupWindow extends JDialog {
         contentCards.setOpaque(false);
         contentCards.add(buildPeersView(), CARD_PEERS);
 
-        JPanel chatView = new JPanel(new BorderLayout());
-        chatView.setOpaque(false);
+        chatViewPanel = new JPanel(new BorderLayout());
+        chatViewPanel.setOpaque(false);
 
         messagesContainer.setLayout(new BoxLayout(messagesContainer, BoxLayout.Y_AXIS));
         messagesContainer.setBackground(Theme.BG_WINDOW);
@@ -195,6 +221,16 @@ public class ChatPopupWindow extends JDialog {
         messagesScroll.getVerticalScrollBar().setUnitIncrement(14);
         messagesScroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
 
+        dropBanner.setFont(Theme.FONT_BOLD);
+        dropBanner.setForeground(Theme.ACCENT);
+        dropBanner.setBackground(Theme.BG_CARD);
+        dropBanner.setOpaque(true);
+        dropBanner.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createMatteBorder(0, 0, 1, 0, Theme.ACCENT),
+                BorderFactory.createEmptyBorder(7, 10, 7, 10)
+        ));
+        dropBanner.setVisible(false);
+
         attachmentStrip.setLayout(new BoxLayout(attachmentStrip, BoxLayout.Y_AXIS));
         attachmentStrip.setBackground(Theme.BG_HEADER);
         attachmentStrip.setBorder(BorderFactory.createCompoundBorder(
@@ -203,16 +239,19 @@ public class ChatPopupWindow extends JDialog {
         ));
         attachmentStrip.setVisible(false);
 
+        chatInputBar = buildInputBar();
+
         JPanel southPanel = new JPanel(new BorderLayout());
         southPanel.setOpaque(false);
         southPanel.add(attachmentStrip, BorderLayout.NORTH);
-        southPanel.add(buildInputBar(), BorderLayout.SOUTH);
+        southPanel.add(chatInputBar, BorderLayout.SOUTH);
 
-        chatView.add(messagesScroll, BorderLayout.CENTER);
-        chatView.add(southPanel, BorderLayout.SOUTH);
-        installChatClipboardAndDrop(chatView);
+        chatViewPanel.add(dropBanner, BorderLayout.NORTH);
+        chatViewPanel.add(messagesScroll, BorderLayout.CENTER);
+        chatViewPanel.add(southPanel, BorderLayout.SOUTH);
+        installChatClipboardAndDrop(chatViewPanel, southPanel);
 
-        contentCards.add(chatView, CARD_CHAT);
+        contentCards.add(chatViewPanel, CARD_CHAT);
         contentCards.add(buildSettingsView(), CARD_SETTINGS);
         root.add(contentCards, BorderLayout.CENTER);
 
@@ -466,20 +505,7 @@ public class ChatPopupWindow extends JDialog {
         return local;
     }
 
-    public void handleIncomingFileStarted(Peer sender, ChatMessage message) {
-        addIncomingMessage(sender, message);
-    }
-
-    public void handleIncomingFileCompleted(Peer sender, ChatMessage message, boolean success) {
-        if (message.getAttachment() != null) {
-            message.getAttachment().notifyListener();
-        }
-        if (isChattingWith(sender)) {
-            renderMessages();
-        }
-    }
-
-    public ChatGroup handleIncomingGroupFileStarted(Peer sender, ChatGroup incoming, ChatMessage message) {
+    public ChatGroup handleIncomingGroupFileOffered(Peer sender, ChatGroup incoming, ChatMessage message) {
         if (settings.isGroupDeleted(incoming.getId())) {
             notifySenderThatGroupWasDeleted(sender, incoming.getId());
             return null;
@@ -493,6 +519,14 @@ public class ChatPopupWindow extends JDialog {
             local.addMember(sender.getId(), sender.getName());
             if (local.mergeFrom(incoming)) {
                 settings.save();
+            }
+        }
+
+        FileAttachment att = message.getAttachment();
+        if (att != null && att.isEncryptedPendingUnlock() && local.hasPasswordKey()) {
+            byte[] key = local.getPasswordKeyBytes();
+            if (key != null) {
+                decryptGroupOfferMetadata(message, key);
             }
         }
 
@@ -511,40 +545,6 @@ public class ChatPopupWindow extends JDialog {
         } else {
             unreadCounts.merge(key, 1, Integer::sum);
             renderPeerList();
-        }
-        return local;
-    }
-
-    public ChatGroup handleIncomingGroupFileCompleted(Peer sender, ChatGroup incoming,
-                                                      ChatMessage message, boolean success,
-                                                      Runnable onReady) {
-        ChatGroup local = settings.getGroup(incoming.getId());
-        if (local == null || settings.isGroupDeleted(incoming.getId())) {
-            return null;
-        }
-        FileAttachment att = message.getAttachment();
-        if (success && att != null && att.isEncryptedPendingUnlock() && local.hasPasswordKey()) {
-            byte[] key = local.getPasswordKeyBytes();
-            if (key != null) {
-                decryptGroupFileAsync(local, message, key, () -> {
-                    if (isChattingWithGroup(local)) {
-                        renderMessages();
-                    }
-                    if (onReady != null) {
-                        onReady.run();
-                    }
-                });
-                return local;
-            }
-        }
-        if (att != null) {
-            att.notifyListener();
-        }
-        if (isChattingWithGroup(local)) {
-            renderMessages();
-        }
-        if (onReady != null) {
-            onReady.run();
         }
         return local;
     }
@@ -879,12 +879,9 @@ public class ChatPopupWindow extends JDialog {
                 BorderFactory.createEmptyBorder(8, 10, 8, 10)
         ));
 
-        attachButton.setIcon(UiIcons.paperclip(Theme.TEXT_PRIMARY, 16));
-        attachButton.setBackground(Theme.BG_INPUT);
-        attachButton.setFocusPainted(false);
-        attachButton.setBorder(BorderFactory.createLineBorder(Theme.BORDER, 1));
-        attachButton.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        attachButton.setBorder(BorderFactory.createEmptyBorder());
         attachButton.setPreferredSize(new Dimension(32, 32));
+        attachButton.setMinimumSize(new Dimension(32, 32));
         attachButton.setToolTipText(I18n.t(I18n.Key.ATTACH_FILE_TOOLTIP));
         attachButton.addActionListener(e -> promptSelectFiles());
 
@@ -913,6 +910,7 @@ public class ChatPopupWindow extends JDialog {
         JButton sendBtn = accentButton("➤");
         sendBtn.setFont(Theme.FONT_TITLE);
         sendBtn.setPreferredSize(new Dimension(42, 32));
+        sendBtn.setBorder(BorderFactory.createEmptyBorder(2, 6, 2, 6));
         sendBtn.addActionListener(e -> sendCurrentMessage());
 
         messageCounter.setFont(Theme.FONT_SMALL);
@@ -1062,7 +1060,7 @@ public class ChatPopupWindow extends JDialog {
         });
     }
 
-    private void installChatClipboardAndDrop(JPanel chatView) {
+    private void installChatClipboardAndDrop(JPanel chatView, JPanel southPanel) {
         chatView.registerKeyboardAction(
                 e -> {
                     if (!inputField.isFocusOwner()) {
@@ -1073,24 +1071,214 @@ public class ChatPopupWindow extends JDialog {
                 JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT
         );
 
-        TransferHandler dropHandler = new TransferHandler() {
+        fileDropHandler = new TransferHandler() {
             @Override
             public boolean canImport(TransferSupport support) {
-                return support.isDataFlavorSupported(DataFlavor.javaFileListFlavor)
-                        || support.isDataFlavorSupported(DataFlavor.imageFlavor);
+                return hasSupportedDropFlavor(support.getDataFlavors());
             }
 
             @Override
             public boolean importData(TransferSupport support) {
+                if (dropHighlightClearTimer != null) {
+                    dropHighlightClearTimer.stop();
+                }
+                setDropHighlight(false);
                 if (!canImport(support)) {
                     return false;
                 }
-                return handleTransferable(support.getTransferable(), false);
+                boolean imported = handleTransferable(support.getTransferable(), false);
+                if (imported) {
+                    SwingUtilities.invokeLater(() -> {
+                        toFront();
+                        inputField.requestFocusInWindow();
+                    });
+                }
+                return imported;
             }
         };
-        chatView.setTransferHandler(dropHandler);
-        messagesContainer.setTransferHandler(dropHandler);
-        messagesScroll.setTransferHandler(dropHandler);
+
+        dropHighlightClearTimer = new Timer(80, e -> setDropHighlight(false));
+        dropHighlightClearTimer.setRepeats(false);
+
+        installDropSupport(chatView);
+        installDropSupport(dropBanner);
+        installDropSupport(messagesScroll);
+        installDropSupport(messagesScroll.getViewport());
+        installDropSupport(messagesContainer);
+        installDropSupport(southPanel);
+        installDropSupport(attachmentStrip);
+        installDropSupport(chatInputBar);
+        installDropSupport(attachButton);
+        installDropSupport(inputField);
+    }
+
+    private void installDropSupport(JComponent component) {
+        if (component == null || fileDropHandler == null) {
+            return;
+        }
+        if (component instanceof JTextComponent textComp) {
+            TransferHandler existing = textComp.getTransferHandler();
+            if (!(existing instanceof DelegatingDropTransferHandler)) {
+                textComp.setTransferHandler(new DelegatingDropTransferHandler(existing, fileDropHandler));
+            }
+        } else {
+            component.setTransferHandler(fileDropHandler);
+        }
+        attachDropHighlightListener(component);
+    }
+
+    private void attachDropHighlightListener(JComponent component) {
+        DropTarget target = component.getDropTarget();
+        if (target == null) {
+            return;
+        }
+        try {
+            target.addDropTargetListener(new DropTargetAdapter() {
+                @Override
+                public void dragEnter(DropTargetDragEvent dtde) {
+                    handleDragUpdate(dtde);
+                }
+
+                @Override
+                public void dragOver(DropTargetDragEvent dtde) {
+                    handleDragUpdate(dtde);
+                }
+
+                @Override
+                public void dragExit(DropTargetEvent dte) {
+                    scheduleClearDropHighlight();
+                }
+
+                @Override
+                public void drop(DropTargetDropEvent dtde) {
+                    if (dropHighlightClearTimer != null) {
+                        dropHighlightClearTimer.stop();
+                    }
+                    setDropHighlight(false);
+                }
+            });
+        } catch (TooManyListenersException ignored) {
+        }
+    }
+
+    private void handleDragUpdate(DropTargetDragEvent dtde) {
+        if (!CARD_CHAT.equals(currentCard)) {
+            return;
+        }
+        if (hasSupportedDropFlavor(dtde.getCurrentDataFlavors())) {
+            if (dropHighlightClearTimer != null) {
+                dropHighlightClearTimer.stop();
+            }
+            setDropHighlight(true);
+        }
+    }
+
+    private void scheduleClearDropHighlight() {
+        if (dropHighlightClearTimer != null) {
+            dropHighlightClearTimer.restart();
+        } else {
+            setDropHighlight(false);
+        }
+    }
+
+    private void setDropHighlight(boolean active) {
+        if (chatViewPanel == null) {
+            return;
+        }
+        if (dropBanner.isVisible() == active) {
+            return;
+        }
+        dropBanner.setVisible(active);
+        chatViewPanel.setBorder(active ? BorderFactory.createLineBorder(Theme.ACCENT, 2) : null);
+        chatViewPanel.revalidate();
+        chatViewPanel.repaint();
+    }
+
+    private static boolean hasSupportedDropFlavor(DataFlavor[] flavors) {
+        if (flavors == null) {
+            return false;
+        }
+        for (DataFlavor flavor : flavors) {
+            if (DataFlavor.javaFileListFlavor.equals(flavor)
+                    || DataFlavor.imageFlavor.equals(flavor)
+                    || isUriListFlavor(flavor)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isUriListFlavor(DataFlavor flavor) {
+        return flavor != null
+                && "text".equalsIgnoreCase(flavor.getPrimaryType())
+                && "uri-list".equalsIgnoreCase(flavor.getSubType())
+                && String.class.isAssignableFrom(flavor.getRepresentationClass());
+    }
+
+    private static List<File> extractFilesFromUriList(String uriList) {
+        List<File> files = new ArrayList<>();
+        if (uriList == null || uriList.isBlank()) {
+            return files;
+        }
+        for (String rawLine : uriList.split("\\r?\\n")) {
+            String line = rawLine.trim();
+            if (line.isEmpty() || line.startsWith("#")) {
+                continue;
+            }
+            try {
+                URI uri = URI.create(line);
+                if ("file".equalsIgnoreCase(uri.getScheme())) {
+                    File file = Paths.get(uri).toFile();
+                    if (file.exists()) {
+                        files.add(file);
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return files;
+    }
+
+    private final class DelegatingDropTransferHandler extends TransferHandler {
+        private static final long serialVersionUID = 1L;
+        private final TransferHandler delegate;
+        private final TransferHandler dropHandler;
+
+        private DelegatingDropTransferHandler(TransferHandler delegate, TransferHandler dropHandler) {
+            this.delegate = delegate;
+            this.dropHandler = dropHandler;
+        }
+
+        @Override
+        public boolean canImport(TransferSupport support) {
+            if (dropHandler.canImport(support)) {
+                return true;
+            }
+            return delegate != null && delegate.canImport(support);
+        }
+
+        @Override
+        public boolean importData(TransferSupport support) {
+            if (dropHandler.canImport(support) && dropHandler.importData(support)) {
+                return true;
+            }
+            return delegate != null && delegate.importData(support);
+        }
+
+        @Override
+        public int getSourceActions(JComponent c) {
+            return delegate != null ? delegate.getSourceActions(c) : COPY;
+        }
+
+        @Override
+        public void exportToClipboard(JComponent comp, Clipboard clip, int action)
+                throws IllegalStateException {
+            if (delegate != null) {
+                delegate.exportToClipboard(comp, clip, action);
+            } else {
+                super.exportToClipboard(comp, clip, action);
+            }
+        }
     }
 
     private boolean handleClipboardPaste(boolean allowTextIntoInput) {
@@ -1136,6 +1324,20 @@ public class ChatPopupWindow extends JDialog {
                         stageClipboardImage(bi);
                         inputField.requestFocusInWindow();
                         return true;
+                    }
+                }
+            }
+
+            for (DataFlavor flavor : transferable.getTransferDataFlavors()) {
+                if (isUriListFlavor(flavor)) {
+                    Object data = transferable.getTransferData(flavor);
+                    if (data instanceof String uriList) {
+                        List<File> files = extractFilesFromUriList(uriList);
+                        if (!files.isEmpty()) {
+                            stageFiles(files);
+                            inputField.requestFocusInWindow();
+                            return true;
+                        }
                     }
                 }
             }
@@ -1256,14 +1458,17 @@ public class ChatPopupWindow extends JDialog {
             info.add(nameLabel, BorderLayout.NORTH);
             info.add(sizeLabel, BorderLayout.SOUTH);
 
-            JButton removeBtn = new JButton("×");
-            removeBtn.setFont(Theme.FONT_TITLE);
-            removeBtn.setForeground(Theme.TEXT_MUTED);
-            removeBtn.setContentAreaFilled(false);
-            removeBtn.setBorderPainted(false);
-            removeBtn.setFocusPainted(false);
-            removeBtn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-            removeBtn.setMargin(new Insets(0, 4, 0, 4));
+            JButton removeBtn = UiIcons.darkButton(
+                    null,
+                    UiIcons.cancel(Theme.TEXT_MUTED, 11),
+                    Theme.BTN_DARK,
+                    Theme.BTN_DANGER_HOVER,
+                    Theme.BTN_DARK_BORDER,
+                    Theme.TEXT_PRIMARY,
+                    6
+            );
+            removeBtn.setPreferredSize(new Dimension(22, 22));
+            removeBtn.setBorder(BorderFactory.createEmptyBorder());
             removeBtn.setToolTipText(I18n.t(I18n.Key.REMOVE_ATTACHMENT_TOOLTIP));
             removeBtn.addActionListener(e -> {
                 if (index < pendingAttachments.size()) {
@@ -1272,9 +1477,13 @@ public class ChatPopupWindow extends JDialog {
                 }
             });
 
+            JPanel removeWrap = new JPanel(new GridBagLayout());
+            removeWrap.setOpaque(false);
+            removeWrap.add(removeBtn);
+
             item.add(iconLabel, BorderLayout.WEST);
             item.add(info, BorderLayout.CENTER);
-            item.add(removeBtn, BorderLayout.EAST);
+            item.add(removeWrap, BorderLayout.EAST);
 
             attachmentStrip.add(item);
             if (i < pendingAttachments.size() - 1) {
@@ -1487,6 +1696,7 @@ public class ChatPopupWindow extends JDialog {
             empty.setFont(Theme.FONT_BODY);
             empty.setForeground(Theme.TEXT_MUTED);
             empty.setBorder(BorderFactory.createEmptyBorder(22, 8, 8, 8));
+            installDropSupport(empty);
             messagesContainer.add(empty);
         } else {
             boolean showSender = activeGroup != null;
@@ -1574,6 +1784,7 @@ public class ChatPopupWindow extends JDialog {
         });
         menu.add(copyItem);
         text.setComponentPopupMenu(menu);
+        installDropSupport(text);
         return text;
     }
 
@@ -1597,11 +1808,14 @@ public class ChatPopupWindow extends JDialog {
 
     private void populateAttachmentContainer(JPanel container, ChatMessage msg,
                                              FileAttachment att, JPanel row) {
-        boolean readyToView = !att.isEncryptedPendingUnlock()
+        boolean hasLocalFile = !att.isEncryptedPendingUnlock()
                 && att.getLocalPath() != null
+                && Files.isRegularFile(att.getLocalPath())
                 && (!msg.isIncoming() || att.getStatus() == FileAttachment.Status.COMPLETED);
+        boolean canDownload = !att.isEncryptedPendingUnlock()
+                && (hasLocalFile || att.canDownloadFromPeer());
 
-        if (att.isImage() && readyToView) {
+        if (att.isImage() && hasLocalFile) {
             JPanel imageRow = new JPanel(new BorderLayout(6, 0));
             imageRow.setOpaque(false);
 
@@ -1645,7 +1859,7 @@ public class ChatPopupWindow extends JDialog {
             popup.add(saveImg);
             imgLabel.setComponentPopupMenu(popup);
 
-            JButton dlBtn = createDownloadButton(att, true);
+            JButton dlBtn = createAttachmentActionButton(container, msg, att, row, true);
             JPanel dlWrap = new JPanel(new BorderLayout());
             dlWrap.setOpaque(false);
             dlWrap.add(dlBtn, BorderLayout.SOUTH);
@@ -1686,42 +1900,124 @@ public class ChatPopupWindow extends JDialog {
 
         JLabel subLabel = new JLabel(buildAttachmentSubtitle(msg, att, false));
         subLabel.setFont(Theme.FONT_SMALL);
-        subLabel.setForeground(att.getStatus() == FileAttachment.Status.FAILED
-                ? Theme.DANGER : new Color(225, 228, 240, 200));
+        Color subColor;
+        if (att.getStatus() == FileAttachment.Status.FAILED) {
+            subColor = Theme.DANGER;
+        } else if (att.getStatus() == FileAttachment.Status.AVAILABLE && !att.isEncryptedPendingUnlock()) {
+            subColor = Theme.ACCENT;
+        } else {
+            subColor = new Color(225, 228, 240, 200);
+        }
+        subLabel.setForeground(subColor);
 
         JPanel info = new JPanel(new BorderLayout(0, 1));
         info.setOpaque(false);
         info.add(nameLabel, BorderLayout.NORTH);
         info.add(subLabel, BorderLayout.SOUTH);
 
-        JButton dlBtn = createDownloadButton(att, readyToView);
+        JButton dlBtn = createAttachmentActionButton(container, msg, att, row, canDownload);
+        JPanel dlWrap = new JPanel(new GridBagLayout());
+        dlWrap.setOpaque(false);
+        dlWrap.add(dlBtn);
 
         card.add(icon, BorderLayout.WEST);
         card.add(info, BorderLayout.CENTER);
-        card.add(dlBtn, BorderLayout.EAST);
+        card.add(dlWrap, BorderLayout.EAST);
         container.add(card, BorderLayout.CENTER);
     }
 
-    private JButton createDownloadButton(FileAttachment att, boolean enabled) {
-        JButton btn = new JButton(UiIcons.download(
-                enabled ? Color.WHITE : new Color(255, 255, 255, 90), 15));
+    private JButton createAttachmentActionButton(JPanel container, ChatMessage msg,
+                                                 FileAttachment att, JPanel row,
+                                                 boolean downloadEnabled) {
+        Runnable refresh = () -> refreshAttachmentContainer(container, msg, att, row);
+        attachmentRefreshCallbacks.put(att, refresh);
+        if (att.isSaving()) {
+            return createCancelButton(I18n.t(I18n.Key.CANCEL_DOWNLOAD_TOOLTIP), () -> {
+                att.cancelSaving();
+                refresh.run();
+            });
+        }
+        if (att.getStatus() == FileAttachment.Status.TRANSFERRING) {
+            I18n.Key tipKey = msg.isIncoming()
+                    ? I18n.Key.CANCEL_DOWNLOAD_TOOLTIP
+                    : I18n.Key.CANCEL_UPLOAD_TOOLTIP;
+            return createCancelButton(I18n.t(tipKey), () -> {
+                att.cancel();
+                refresh.run();
+            });
+        }
+        return createDownloadButton(att, downloadEnabled, refresh);
+    }
+
+    private void refreshAttachmentContainer(JPanel container, ChatMessage msg,
+                                            FileAttachment att, JPanel row) {
+        Runnable rebuild = () -> {
+            container.removeAll();
+            populateAttachmentContainer(container, msg, att, row);
+            container.revalidate();
+            container.repaint();
+            row.revalidate();
+            row.repaint();
+        };
+        if (SwingUtilities.isEventDispatchThread()) {
+            rebuild.run();
+        } else {
+            SwingUtilities.invokeLater(rebuild);
+        }
+    }
+
+    private JButton createDownloadButton(FileAttachment att, boolean enabled,
+                                         Runnable onStateChanged) {
+        JButton btn = UiIcons.darkButton(
+                null,
+                UiIcons.download(enabled ? Theme.TEXT_PRIMARY : Theme.TEXT_MUTED, 15),
+                Theme.BTN_DARK,
+                Theme.BTN_DARK_HOVER,
+                Theme.BTN_DARK_BORDER,
+                Theme.TEXT_PRIMARY,
+                8
+        );
         btn.setPreferredSize(new Dimension(30, 30));
-        btn.setBackground(new Color(0, 0, 0, 65));
-        btn.setFocusPainted(false);
-        btn.setBorder(BorderFactory.createLineBorder(new Color(255, 255, 255, 45), 1));
-        btn.setCursor(Cursor.getPredefinedCursor(enabled ? Cursor.HAND_CURSOR : Cursor.DEFAULT_CURSOR));
+        btn.setBorder(BorderFactory.createEmptyBorder());
         btn.setEnabled(enabled);
+        btn.setCursor(Cursor.getPredefinedCursor(enabled ? Cursor.HAND_CURSOR : Cursor.DEFAULT_CURSOR));
         btn.setToolTipText(I18n.t(I18n.Key.DOWNLOAD_TOOLTIP));
-        btn.addActionListener(e -> downloadAttachment(att));
+        btn.addActionListener(e -> downloadAttachment(att, onStateChanged));
+        return btn;
+    }
+
+    private JButton createCancelButton(String tooltip, Runnable action) {
+        JButton btn = UiIcons.darkButton(
+                null,
+                UiIcons.cancel(Theme.TEXT_PRIMARY, 13),
+                Theme.BTN_DANGER,
+                Theme.BTN_DANGER_HOVER,
+                Theme.BTN_DARK_BORDER,
+                Theme.TEXT_PRIMARY,
+                8
+        );
+        btn.setPreferredSize(new Dimension(30, 30));
+        btn.setBorder(BorderFactory.createEmptyBorder());
+        btn.setToolTipText(tooltip);
+        btn.addActionListener(e -> action.run());
         return btn;
     }
 
     private String buildAttachmentSubtitle(ChatMessage msg, FileAttachment att, boolean includeName) {
         String sizeStr = FileAttachment.formatSize(att.getFileSize());
         String base = includeName ? truncateFileName(att.getFileName(), 22) + " · " + sizeStr : sizeStr;
+        if (att.isSaving()) {
+            return sizeStr + " · " + I18n.t(I18n.Key.SAVING_PROGRESS, att.getSaveProgressPercent());
+        }
         if (att.getStatus() == FileAttachment.Status.TRANSFERRING) {
             I18n.Key key = msg.isIncoming() ? I18n.Key.TRANSFERRING_RECV : I18n.Key.TRANSFERRING_SEND;
             return sizeStr + " · " + I18n.t(key, att.getProgressPercent());
+        }
+        if (att.getStatus() == FileAttachment.Status.AVAILABLE) {
+            return sizeStr + " · " + I18n.t(I18n.Key.READY_TO_DOWNLOAD);
+        }
+        if (att.getStatus() == FileAttachment.Status.CANCELLED) {
+            return sizeStr + " · " + I18n.t(I18n.Key.TRANSFER_CANCELLED);
         }
         if (att.getStatus() == FileAttachment.Status.FAILED) {
             return sizeStr + " · " + I18n.t(I18n.Key.TRANSFER_FAILED);
@@ -1776,11 +2072,17 @@ public class ChatPopupWindow extends JDialog {
     }
 
     private void downloadAttachment(FileAttachment att) {
-        if (att == null || att.isEncryptedPendingUnlock()) {
+        downloadAttachment(att, att != null ? attachmentRefreshCallbacks.get(att) : null);
+    }
+
+    private void downloadAttachment(FileAttachment att, Runnable onStateChanged) {
+        if (att == null || att.isEncryptedPendingUnlock()
+                || att.isSaving() || att.getStatus() == FileAttachment.Status.TRANSFERRING) {
             return;
         }
         Path src = att.getLocalPath();
-        if (src == null || !Files.isRegularFile(src)) {
+        boolean hasLocal = src != null && Files.isRegularFile(src);
+        if (!hasLocal && !att.canDownloadFromPeer()) {
             return;
         }
         FileDialog fd = new FileDialog(this, I18n.t(I18n.Key.SAVE_FILE_TITLE), FileDialog.SAVE);
@@ -1790,15 +2092,97 @@ public class ChatPopupWindow extends JDialog {
             return;
         }
         Path dest = Paths.get(fd.getDirectory(), fd.getFile());
+        if (!hasLocal) {
+            byte[] groupKey = null;
+            if (att.isEncryptedOffer()) {
+                ChatGroup group = att.getOfferGroupId() != null
+                        ? settings.getGroup(att.getOfferGroupId()) : null;
+                groupKey = group != null ? group.getPasswordKeyBytes() : null;
+                if (groupKey == null) {
+                    JOptionPane.showMessageDialog(
+                            this,
+                            I18n.t(I18n.Key.UNLOCK_FAILED),
+                            I18n.t(I18n.Key.AERO_ERROR_TITLE),
+                            JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+            }
+            network.downloadOfferedFileAsync(att, dest, groupKey, outcome -> SwingUtilities.invokeLater(() -> {
+                if (onStateChanged != null) {
+                    onStateChanged.run();
+                }
+                if (outcome == PeerNetwork.DownloadOutcome.UNAVAILABLE) {
+                    JOptionPane.showMessageDialog(
+                            this,
+                            I18n.t(I18n.Key.FILE_UNAVAILABLE_ERROR),
+                            I18n.t(I18n.Key.AERO_ERROR_TITLE),
+                            JOptionPane.WARNING_MESSAGE);
+                } else if (outcome == PeerNetwork.DownloadOutcome.FAILED) {
+                    JOptionPane.showMessageDialog(
+                            this,
+                            I18n.t(I18n.Key.TRANSFER_FAILED),
+                            I18n.t(I18n.Key.AERO_ERROR_TITLE),
+                            JOptionPane.ERROR_MESSAGE);
+                }
+            }));
+            return;
+        }
+        if (src.toAbsolutePath().normalize().equals(dest.toAbsolutePath().normalize())) {
+            return;
+        }
+        if (!att.startSaving()) {
+            return;
+        }
+        if (onStateChanged != null) {
+            onStateChanged.run();
+        }
         new Thread(() -> {
+            boolean cancelled = false;
             try {
-                Files.copy(src, dest, StandardCopyOption.REPLACE_EXISTING);
+                try (InputStream in = Files.newInputStream(src);
+                     OutputStream out = Files.newOutputStream(dest)) {
+                    byte[] buffer = new byte[65536];
+                    long copied = 0L;
+                    int lastPercent = -1;
+                    int read;
+                    while ((read = in.read(buffer)) != -1) {
+                        if (att.isSaveCancelled()) {
+                            cancelled = true;
+                            break;
+                        }
+                        out.write(buffer, 0, read);
+                        copied += read;
+                        att.updateSaveProgress(copied);
+                        int pct = att.getSaveProgressPercent();
+                        if (pct != lastPercent) {
+                            lastPercent = pct;
+                            if (onStateChanged != null) {
+                                onStateChanged.run();
+                            }
+                        }
+                    }
+                    out.flush();
+                }
+                if (cancelled || att.isSaveCancelled()) {
+                    Files.deleteIfExists(dest);
+                }
             } catch (IOException ex) {
-                SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(
-                        this,
-                        I18n.t(I18n.Key.FILE_SAVE_ERROR, ex.getMessage()),
-                        I18n.t(I18n.Key.AERO_ERROR_TITLE),
-                        JOptionPane.ERROR_MESSAGE));
+                try {
+                    Files.deleteIfExists(dest);
+                } catch (IOException ignored) {
+                }
+                if (!att.isSaveCancelled()) {
+                    SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(
+                            this,
+                            I18n.t(I18n.Key.FILE_SAVE_ERROR, ex.getMessage()),
+                            I18n.t(I18n.Key.AERO_ERROR_TITLE),
+                            JOptionPane.ERROR_MESSAGE));
+                }
+            } finally {
+                att.finishSaving();
+                if (onStateChanged != null) {
+                    onStateChanged.run();
+                }
             }
         }, "aero-file-save").start();
     }
@@ -1901,6 +2285,7 @@ public class ChatPopupWindow extends JDialog {
         settingsButton.setToolTipText(I18n.t(I18n.Key.SETTINGS_TOOLTIP));
         membersButton.setToolTipText(I18n.t(I18n.Key.VIEW_MEMBERS));
         attachButton.setToolTipText(I18n.t(I18n.Key.ATTACH_FILE_TOOLTIP));
+        dropBanner.setText(I18n.t(I18n.Key.DROP_FILES_HINT));
         newGroupButton.setText(I18n.t(I18n.Key.GROUP_BUTTON));
         renameButton.setText(I18n.t(I18n.Key.RENAME_BUTTON));
         connectButton.setText(I18n.t(I18n.Key.IP_CONNECT));
@@ -2223,62 +2608,36 @@ public class ChatPopupWindow extends JDialog {
                 }
             } else if (message.hasAttachment() && message.isIncoming()) {
                 FileAttachment att = message.getAttachment();
-                if (att.isEncryptedPendingUnlock() && att.getStatus() == FileAttachment.Status.COMPLETED) {
-                    decryptGroupFileAsync(group, message, key, () -> {
-                        if (isChattingWithGroup(group)) {
-                            renderMessages();
-                        }
-                    });
+                if (att.isEncryptedPendingUnlock()) {
+                    decryptGroupOfferMetadata(message, key);
                 }
             }
         }
     }
 
-    private void decryptGroupFileAsync(ChatGroup group, ChatMessage message, byte[] key, Runnable onDone) {
+    private void decryptGroupOfferMetadata(ChatMessage message, byte[] key) {
         FileAttachment att = message.getAttachment();
-        if (att == null || !att.isEncryptedPendingUnlock() || att.getEncryptedPath() == null) {
+        if (att == null || !att.isEncryptedPendingUnlock()) {
             return;
         }
-        new Thread(() -> {
-            try {
-                String metaPlain = GroupCrypto.decrypt(key, att.getMetaIv(), att.getMetaCipherText());
-                String[] metaParts = metaPlain.split("\\|", -1);
-                if (metaParts.length < 3) {
-                    return;
-                }
-                boolean isImage = "1".equals(metaParts[0]);
-                String fileName = new String(Base64.getDecoder().decode(metaParts[1]), StandardCharsets.UTF_8);
-                String caption = ChatMessage.truncate(
-                        new String(Base64.getDecoder().decode(metaParts[2]), StandardCharsets.UTF_8));
-
-                Path plainPath = network.getTransferDir().resolve(att.getTransferId() + ".dat");
-                try (java.io.InputStream encIn = new java.io.BufferedInputStream(
-                        Files.newInputStream(att.getEncryptedPath()), 65_536);
-                     java.io.OutputStream plainOut = new java.io.BufferedOutputStream(
-                             Files.newOutputStream(plainPath), 65_536)) {
-                    GroupCrypto.decryptStream(key, encIn, plainOut, null);
-                }
-
-                try {
-                    Files.deleteIfExists(att.getEncryptedPath());
-                } catch (IOException ignored) {
-                }
-
-                att.setImage(isImage);
-                att.setFileName(fileName);
-                att.setLocalPath(plainPath);
-                att.setEncryptedPendingUnlock(false);
-                message.setDecryptedText(caption);
-
-                SwingUtilities.invokeLater(() -> {
-                    att.notifyListener();
-                    if (onDone != null) {
-                        onDone.run();
-                    }
-                });
-            } catch (Exception ignored) {
+        try {
+            String metaPlain = GroupCrypto.decrypt(key, att.getMetaIv(), att.getMetaCipherText());
+            String[] metaParts = metaPlain.split("\\|", -1);
+            if (metaParts.length < 3) {
+                return;
             }
-        }, "aero-file-decrypt").start();
+            boolean isImage = "1".equals(metaParts[0]);
+            String fileName = new String(Base64.getDecoder().decode(metaParts[1]), StandardCharsets.UTF_8);
+            String caption = ChatMessage.truncate(
+                    new String(Base64.getDecoder().decode(metaParts[2]), StandardCharsets.UTF_8));
+
+            att.setImage(isImage);
+            att.setFileName(fileName);
+            att.setEncryptedPendingUnlock(false);
+            message.setDecryptedText(caption);
+            att.notifyListener();
+        } catch (Exception ignored) {
+        }
     }
 
     private void deleteGroup(ChatGroup group) {
@@ -2525,27 +2884,32 @@ public class ChatPopupWindow extends JDialog {
     }
 
     private JButton accentButton(String text) {
-        JButton button = new JButton(text);
+        JButton button = UiIcons.darkButton(
+                text,
+                null,
+                Theme.BTN_ACCENT,
+                Theme.BTN_ACCENT_HOVER,
+                Theme.BTN_DARK_BORDER,
+                Color.WHITE,
+                8
+        );
         button.setFont(Theme.FONT_SMALL);
-        button.setBackground(Theme.ACCENT);
-        button.setForeground(Color.WHITE);
-        button.setFocusPainted(false);
-        button.setBorderPainted(false);
-        button.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        button.setMargin(new Insets(4, 8, 4, 8));
+        button.setBorder(BorderFactory.createEmptyBorder(5, 8, 5, 8));
         return button;
     }
 
     private JButton secondaryButton(String text) {
-        JButton button = new JButton(text);
+        JButton button = UiIcons.darkButton(
+                text,
+                null,
+                Theme.BTN_DARK,
+                Theme.BTN_DARK_HOVER,
+                Theme.BTN_DARK_BORDER,
+                Theme.TEXT_PRIMARY,
+                8
+        );
         button.setFont(Theme.FONT_SMALL);
-        button.setForeground(Theme.TEXT_PRIMARY);
-        button.setContentAreaFilled(false);
-        button.setBorderPainted(false);
-        button.setFocusPainted(false);
-        button.setOpaque(false);
-        button.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        button.setMargin(new Insets(4, 10, 4, 10));
+        button.setBorder(BorderFactory.createEmptyBorder(5, 8, 5, 8));
         return button;
     }
 

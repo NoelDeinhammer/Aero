@@ -128,7 +128,14 @@ public final class I18n {
         NOTIFICATION_IMAGE,
         NOTIFICATION_FILE,
         IMAGE_PREVIEW_TITLE,
-        OPEN_PREVIEW_TOOLTIP
+        OPEN_PREVIEW_TOOLTIP,
+        CANCEL_UPLOAD_TOOLTIP,
+        CANCEL_DOWNLOAD_TOOLTIP,
+        TRANSFER_CANCELLED,
+        SAVING_PROGRESS,
+        DROP_FILES_HINT,
+        READY_TO_DOWNLOAD,
+        FILE_UNAVAILABLE_ERROR
     }
 
     private static volatile Language language = Language.GERMAN;
@@ -236,6 +243,14 @@ public final class I18n {
         de.put(Key.NOTIFICATION_FILE, "Datei: {0} ({1})");
         de.put(Key.IMAGE_PREVIEW_TITLE, "Bildvorschau – {0}");
         de.put(Key.OPEN_PREVIEW_TOOLTIP, "Klicken zum Vergrößern");
+        de.put(Key.CANCEL_UPLOAD_TOOLTIP, "Upload abbrechen");
+        de.put(Key.CANCEL_DOWNLOAD_TOOLTIP, "Download abbrechen");
+        de.put(Key.TRANSFER_CANCELLED, "Abgebrochen");
+        de.put(Key.SAVING_PROGRESS, "Wird gespeichert… {0}%");
+        de.put(Key.DROP_FILES_HINT, "Dateien oder Screenshots hier ablegen");
+        de.put(Key.READY_TO_DOWNLOAD, "Bereit zum Download");
+        de.put(Key.FILE_UNAVAILABLE_ERROR,
+                "Die Datei konnte nicht heruntergeladen werden.\nMöglicherweise ist der Absender offline oder hat den Upload beendet.");
         TEXTS.put(Language.GERMAN, Map.copyOf(de));
 
         Map<Key, String> en = new HashMap<>();
@@ -339,6 +354,14 @@ public final class I18n {
         en.put(Key.NOTIFICATION_FILE, "File: {0} ({1})");
         en.put(Key.IMAGE_PREVIEW_TITLE, "Image preview – {0}");
         en.put(Key.OPEN_PREVIEW_TOOLTIP, "Click to enlarge");
+        en.put(Key.CANCEL_UPLOAD_TOOLTIP, "Cancel upload");
+        en.put(Key.CANCEL_DOWNLOAD_TOOLTIP, "Cancel download");
+        en.put(Key.TRANSFER_CANCELLED, "Cancelled");
+        en.put(Key.SAVING_PROGRESS, "Saving… {0}%");
+        en.put(Key.DROP_FILES_HINT, "Drop files or screenshots here");
+        en.put(Key.READY_TO_DOWNLOAD, "Ready to download");
+        en.put(Key.FILE_UNAVAILABLE_ERROR,
+                "Could not download the file.\nThe sender may be offline or the file is no longer available.");
         TEXTS.put(Language.ENGLISH, Map.copyOf(en));
     }
 
