@@ -168,6 +168,7 @@ public class Main {
             }
 
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                chatWindow.saveHistoryNow();
                 hotkeyListener.stop();
                 network.stop();
             }, "aero-shutdown"));
@@ -221,6 +222,7 @@ public class Main {
 
         MenuItem exitItem = new MenuItem(I18n.t(I18n.Key.TRAY_EXIT));
         exitItem.addActionListener(e -> {
+            chatWindow.saveHistoryNow();
             hotkeyListener.stop();
             network.stop();
             TrayIcon icon = trayRef.get();

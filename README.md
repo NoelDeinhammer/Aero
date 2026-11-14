@@ -10,13 +10,16 @@ An extremely lightweight background LAN chat app written in **Java** with swing.
 - **Disable Notifications** - To completely hide the Client you can turn of Notifications.
 - **On-screen-notification** - Easy to see on-screen Popup
 - **Connect with IP** - (EXPERIMENTAL) You can connect to people with the IP but its still experimental.
-- **Auto delete Messages** - Auto deletes all sent Messages after closing the app. (There will be a setting to toggle auto delete on/off)
+- **Keep Messages** - Optionally keep sent and received messages after quitting Aero. Turn it on or off in Settings.
 
 ## Settings location
 All settings are saved automatically under `%APPDATA%\Aero`:
 - `settings.properties` for the normal instance
+- `settings-messages.properties` for saved chat history
 
-These files contain the display name, notification and always-on-top settings, the stable peer ID, and local groups.
+These files contain the display name, notification, always-on-top and keep-messages settings, the stable peer ID, and local groups.
+
+The history file is only written while **Keep messages** is enabled. Turning the option off deletes it again, so messages disappear after closing Aero as before. Peer messages are stored as plain text; password-protected group messages stay encrypted.
 
 ## Install
 Download Aero-portable.zip from the releases tab, extract it and run Aero.exe \

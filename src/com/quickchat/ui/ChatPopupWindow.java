@@ -1,6 +1,7 @@
 package com.quickchat.ui;
 
 import com.quickchat.config.AppSettings;
+import com.quickchat.config.ChatHistoryStore;
 import com.quickchat.i18n.I18n;
 import com.quickchat.model.ChatGroup;
 import com.quickchat.model.ChatMessage;
@@ -105,11 +106,14 @@ public class ChatPopupWindow extends JDialog {
 
     // Settings view
     private final JTextField displayNameField = new JTextField();
+    private final JCheckBox keepMessagesCheck = new JCheckBox();
     private final JCheckBox notificationsCheck = new JCheckBox();
     private final JCheckBox alwaysOnTopCheck = new JCheckBox();
     private final JRadioButton germanRadio = new JRadioButton("Deutsch");
     private final JRadioButton englishRadio = new JRadioButton("English");
     private final JLabel settingsStatus = new JLabel(" ");
+    private JLabel messagesSectionLabel;
+    private JLabel keepMessagesHintLabel;
     private JLabel notificationsSectionLabel;
     private JLabel nameSectionLabel;
     private JLabel languageSectionLabel;
@@ -119,6 +123,8 @@ public class ChatPopupWindow extends JDialog {
 
     // State
     private final Map<String, List<ChatMessage>> histories = new HashMap<>();
+    private final ChatHistoryStore historyStore;
+    private final Timer historySaveTimer;
     private final Map<String, Integer> unreadCounts = new HashMap<>();
     private List<Peer> latestPeers = new ArrayList<>();
     private Peer activePeer = null;
@@ -131,6 +137,9 @@ public class ChatPopupWindow extends JDialog {
     public ChatPopupWindow(PeerNetwork network, AppSettings settings) {
         this.network = network;
         this.settings = settings;
+        this.historyStore = new ChatHistoryStore(settings.getHistoryFile());
+        this.historySaveTimer = new Timer(1200, e -> saveHistoryNow());
+        this.historySaveTimer.setRepeats(false);
 
         setUndecorated(true);
         setAlwaysOnTop(settings.isAlwaysOnTop());
@@ -170,6 +179,7 @@ public class ChatPopupWindow extends JDialog {
         setContentPane(root);
         centerOnScreen();
         applyLanguageTexts();
+        loadStoredHistory();
 
         root.registerKeyboardAction(
                 e -> setVisible(false),
@@ -305,6 +315,7 @@ public class ChatPopupWindow extends JDialog {
         headerTitle.setText(I18n.t(I18n.Key.SETTINGS_TITLE));
         headerSubtitle.setText(I18n.t(I18n.Key.SETTINGS_SUBTITLE));
         displayNameField.setText(network.getMyName());
+        keepMessagesCheck.setSelected(settings.isKeepMessages());
         notificationsCheck.setSelected(settings.isNotificationsEnabled());
         alwaysOnTopCheck.setSelected(settings.isAlwaysOnTop());
         settingsStatus.setText(" ");
@@ -349,7 +360,7 @@ public class ChatPopupWindow extends JDialog {
 
     public void addIncomingMessage(Peer sender, ChatMessage message) {
         String key = peerKey(sender.getId());
-        histories.computeIfAbsent(key, k -> new ArrayList<>()).add(message);
+        appendHistory(key, message);
 
         if (isChattingWith(sender)) {
             appendMessageBubble(message, false);
@@ -393,7 +404,7 @@ public class ChatPopupWindow extends JDialog {
         }
 
         String key = groupKey(local.getId());
-        histories.computeIfAbsent(key, k -> new ArrayList<>()).add(message);
+        appendHistory(key, message);
 
         if (isChattingWithGroup(local)) {
             appendMessageBubble(message, true);
@@ -403,6 +414,77 @@ public class ChatPopupWindow extends JDialog {
             renderPeerList();
         }
         return local;
+    }
+
+    /**
+     * Restores saved conversations when the setting is enabled. Histories of
+     * groups that were deleted locally are ignored.
+     */
+    private void loadStoredHistory() {
+        if (!settings.isKeepMessages()) {
+            return;
+        }
+
+        Map<String, List<ChatMessage>> stored = historyStore.load();
+        synchronized (histories) {
+            histories.putAll(stored);
+            histories.entrySet().removeIf(entry -> {
+                String key = entry.getKey();
+                return key.startsWith("group:")
+                        && settings.isGroupDeleted(key.substring("group:".length()));
+            });
+        }
+
+        // Password-protected groups that were already unlocked can show their
+        // decrypted text immediately, without asking for the password again.
+        for (ChatGroup group : settings.getGroups()) {
+            if (group.isPasswordProtected() && group.hasPasswordKey()) {
+                byte[] key = group.getPasswordKeyBytes();
+                if (key != null) {
+                    decryptStoredMessages(group, key);
+                }
+            }
+        }
+    }
+
+    /**
+     * Writes the current histories immediately. Called on shutdown and after
+     * every change, debounced so fast message bursts only write once.
+     */
+    public void saveHistoryNow() {
+        historySaveTimer.stop();
+        if (!settings.isKeepMessages()) {
+            historyStore.clear();
+            return;
+        }
+
+        Map<String, List<ChatMessage>> snapshot = new HashMap<>();
+        synchronized (histories) {
+            for (Map.Entry<String, List<ChatMessage>> entry : histories.entrySet()) {
+                snapshot.put(entry.getKey(), new ArrayList<>(entry.getValue()));
+            }
+        }
+        historyStore.save(snapshot);
+    }
+
+    private void scheduleHistorySave() {
+        if (settings.isKeepMessages()) {
+            historySaveTimer.restart();
+        }
+    }
+
+    private void appendHistory(String key, ChatMessage message) {
+        synchronized (histories) {
+            histories.computeIfAbsent(key, k -> new ArrayList<>()).add(message);
+        }
+        scheduleHistorySave();
+    }
+
+    private void removeHistory(String key) {
+        synchronized (histories) {
+            histories.remove(key);
+        }
+        scheduleHistorySave();
     }
 
     private JPanel buildHeader() {
@@ -636,6 +718,33 @@ public class ChatPopupWindow extends JDialog {
         panel.setBackground(Theme.BG_WINDOW);
         panel.setBorder(BorderFactory.createEmptyBorder(14, 16, 14, 16));
 
+        messagesSectionLabel = sectionLabel("");
+        panel.add(messagesSectionLabel);
+
+        styleCheckBox(keepMessagesCheck);
+        keepMessagesCheck.setAlignmentX(Component.LEFT_ALIGNMENT);
+        keepMessagesCheck.setSelected(settings.isKeepMessages());
+        keepMessagesCheck.addActionListener(e -> {
+            boolean keep = keepMessagesCheck.isSelected();
+            settings.setKeepMessages(keep);
+            if (keep) {
+                saveHistoryNow();
+            } else {
+                historySaveTimer.stop();
+                historyStore.clear();
+            }
+        });
+        panel.add(keepMessagesCheck);
+
+        keepMessagesHintLabel = new JLabel();
+        keepMessagesHintLabel.setFont(Theme.FONT_SMALL);
+        keepMessagesHintLabel.setForeground(Theme.TEXT_MUTED);
+        keepMessagesHintLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
+        keepMessagesHintLabel.setBorder(BorderFactory.createEmptyBorder(0, 2, 0, 2));
+        panel.add(keepMessagesHintLabel);
+
+        panel.add(Box.createVerticalStrut(14));
+
         notificationsSectionLabel = sectionLabel("");
         panel.add(notificationsSectionLabel);
 
@@ -805,7 +914,7 @@ public class ChatPopupWindow extends JDialog {
             int delivered = network.sendGroupMessage(activeGroup, text);
             String display = delivered > 0 ? text : I18n.t(I18n.Key.NOT_DELIVERED, text);
             ChatMessage msg = new ChatMessage(activeGroup.getId(), network.getMyName(), display, false);
-            histories.computeIfAbsent(groupKey(activeGroup.getId()), k -> new ArrayList<>()).add(msg);
+            appendHistory(groupKey(activeGroup.getId()), msg);
             appendMessageBubble(msg, false);
             scrollToBottom();
             return;
@@ -816,7 +925,7 @@ public class ChatPopupWindow extends JDialog {
         boolean sent = network.sendMessage(activePeer, text);
         String display = sent ? text : I18n.t(I18n.Key.NOT_DELIVERED, text);
         ChatMessage msg = new ChatMessage(activePeer.getId(), network.getMyName(), display, false);
-        histories.computeIfAbsent(peerKey(activePeer.getId()), k -> new ArrayList<>()).add(msg);
+        appendHistory(peerKey(activePeer.getId()), msg);
         appendMessageBubble(msg, false);
         scrollToBottom();
     }
@@ -1182,6 +1291,9 @@ public class ChatPopupWindow extends JDialog {
         notificationsSectionLabel.setText(I18n.t(I18n.Key.NOTIFICATIONS_SECTION));
         notificationsCheck.setText(I18n.t(I18n.Key.NOTIFICATIONS_LABEL));
         alwaysOnTopCheck.setText(I18n.t(I18n.Key.ALWAYS_ON_TOP_LABEL));
+        messagesSectionLabel.setText(I18n.t(I18n.Key.MESSAGES_SECTION));
+        keepMessagesCheck.setText(I18n.t(I18n.Key.KEEP_MESSAGES_LABEL));
+        keepMessagesHintLabel.setText(I18n.t(I18n.Key.KEEP_MESSAGES_HINT));
         nameSectionLabel.setText(I18n.t(I18n.Key.DISPLAY_NAME_SECTION));
         saveNameButton.setText(I18n.t(I18n.Key.SAVE));
         languageSectionLabel.setText(I18n.t(I18n.Key.LANGUAGE_SECTION));
@@ -1509,7 +1621,7 @@ public class ChatPopupWindow extends JDialog {
         }
 
         settings.deleteGroup(group.getId());
-        histories.remove(groupKey(group.getId()));
+        removeHistory(groupKey(group.getId()));
         unreadCounts.remove(groupKey(group.getId()));
         if (activeGroup != null && activeGroup.getId().equals(group.getId())) {
             showPeerSelector();
@@ -1531,7 +1643,7 @@ public class ChatPopupWindow extends JDialog {
         }
 
         settings.deleteGroup(groupId);
-        histories.remove(groupKey(groupId));
+        removeHistory(groupKey(groupId));
         unreadCounts.remove(groupKey(groupId));
         if (activeGroup != null && activeGroup.getId().equals(groupId)) {
             // Do not pop the window open when the group was deleted while

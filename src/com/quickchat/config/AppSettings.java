@@ -32,6 +32,7 @@ public final class AppSettings {
     private String displayName;
     private boolean notificationsEnabled = true;
     private boolean alwaysOnTop = false;
+    private boolean keepMessages = false;
     private I18n.Language language = I18n.Language.GERMAN;
     private String peerId;
     private final Map<String, ChatGroup> groups = new LinkedHashMap<>();
@@ -68,6 +69,8 @@ public final class AppSettings {
                 !"false".equalsIgnoreCase(properties.getProperty("notifications", "true"));
         settings.alwaysOnTop =
                 "true".equalsIgnoreCase(properties.getProperty("alwaysOnTop", "false"));
+        settings.keepMessages =
+                "true".equalsIgnoreCase(properties.getProperty("keepMessages", "false"));
         settings.language = I18n.fromCode(properties.getProperty("language", "de"));
 
         settings.peerId = trimToNull(properties.getProperty("peerId"));
@@ -133,6 +136,16 @@ public final class AppSettings {
         save();
     }
 
+    public synchronized boolean isKeepMessages() {
+        return keepMessages;
+    }
+
+    public synchronized void setKeepMessages(boolean enabled) {
+        if (this.keepMessages == enabled) return;
+        this.keepMessages = enabled;
+        save();
+    }
+
     public synchronized I18n.Language getLanguage() {
         return language;
     }
@@ -186,6 +199,7 @@ public final class AppSettings {
         properties.setProperty("displayName", displayName);
         properties.setProperty("notifications", Boolean.toString(notificationsEnabled));
         properties.setProperty("alwaysOnTop", Boolean.toString(alwaysOnTop));
+        properties.setProperty("keepMessages", Boolean.toString(keepMessages));
         properties.setProperty("language", language.getCode());
         properties.setProperty("peerId", peerId);
         if (!deletedGroups.isEmpty()) {
@@ -222,6 +236,19 @@ public final class AppSettings {
 
     public Path getFile() {
         return file;
+    }
+
+    /**
+     * Saved chat history lives next to the settings file and follows the same
+     * profile name, so multiple instances never overwrite each other.
+     */
+    public Path getHistoryFile() {
+        String name = file.getFileName().toString();
+        int dot = name.lastIndexOf('.');
+        if (dot > 0) {
+            name = name.substring(0, dot);
+        }
+        return file.resolveSibling(name + "-messages.properties");
     }
 
     private static Path resolveFile(String profileHint) {

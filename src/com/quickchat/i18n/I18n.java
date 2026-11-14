@@ -70,6 +70,9 @@ public final class I18n {
         NOTIFICATIONS_SECTION,
         NOTIFICATIONS_LABEL,
         ALWAYS_ON_TOP_LABEL,
+        MESSAGES_SECTION,
+        KEEP_MESSAGES_LABEL,
+        KEEP_MESSAGES_HINT,
         DISPLAY_NAME_SECTION,
         SAVE,
         SETTINGS_AUTOSAVE,
@@ -155,6 +158,9 @@ public final class I18n {
         de.put(Key.NOTIFICATIONS_SECTION, "BENACHRICHTIGUNGEN");
         de.put(Key.NOTIFICATIONS_LABEL, "Benachrichtigungen anzeigen");
         de.put(Key.ALWAYS_ON_TOP_LABEL, "Chat-Fenster immer im Vordergrund");
+        de.put(Key.MESSAGES_SECTION, "NACHRICHTEN");
+        de.put(Key.KEEP_MESSAGES_LABEL, "Nachrichten nach dem Beenden behalten");
+        de.put(Key.KEEP_MESSAGES_HINT, "Ausschalten löscht die gespeicherte Historie.");
         de.put(Key.DISPLAY_NAME_SECTION, "ANZEIGENAME");
         de.put(Key.SAVE, "Speichern");
         de.put(Key.SETTINGS_AUTOSAVE, "Einstellungen werden automatisch gespeichert.<br>Speicherort: %APPDATA%\\Aero");
@@ -237,6 +243,9 @@ public final class I18n {
         en.put(Key.NOTIFICATIONS_SECTION, "NOTIFICATIONS");
         en.put(Key.NOTIFICATIONS_LABEL, "Show notifications");
         en.put(Key.ALWAYS_ON_TOP_LABEL, "Keep chat window always on top");
+        en.put(Key.MESSAGES_SECTION, "MESSAGES");
+        en.put(Key.KEEP_MESSAGES_LABEL, "Keep messages after quitting Aero");
+        en.put(Key.KEEP_MESSAGES_HINT, "Turning this off deletes saved history.");
         en.put(Key.DISPLAY_NAME_SECTION, "DISPLAY NAME");
         en.put(Key.SAVE, "Save");
         en.put(Key.SETTINGS_AUTOSAVE, "Settings are saved automatically.<br>Location: %APPDATA%\\Aero");

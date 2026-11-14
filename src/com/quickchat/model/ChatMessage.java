@@ -31,13 +31,41 @@ public class ChatMessage {
 
     public ChatMessage(String peerId, String senderName, String text, boolean incoming,
                        String iv, String cipherText) {
+        this(peerId, senderName, text, incoming,
+                LocalTime.now().format(TIME_FORMAT), iv, cipherText);
+    }
+
+    private ChatMessage(String peerId, String senderName, String text, boolean incoming,
+                        String formattedTime, String iv, String cipherText) {
         this.peerId = peerId;
         this.senderName = senderName;
         this.text = text;
         this.incoming = incoming;
-        this.formattedTime = LocalTime.now().format(TIME_FORMAT);
+        this.formattedTime = formattedTime;
         this.iv = iv;
         this.cipherText = cipherText;
+    }
+
+    /**
+     * Recreates a message from the local history file, including its original
+     * time. Encrypted group messages keep their IV and cipher text so they can
+     * be decrypted again once the group password is known.
+     */
+    public static ChatMessage restored(String peerId, String senderName, String text,
+                                       boolean incoming, String formattedTime,
+                                       String iv, String cipherText) {
+        String time = formattedTime != null
+                && formattedTime.matches("\\d{2}:\\d{2}")
+                ? formattedTime
+                : LocalTime.now().format(TIME_FORMAT);
+        return new ChatMessage(
+                peerId == null ? "" : peerId,
+                senderName == null ? "" : senderName,
+                text == null ? "" : text,
+                incoming,
+                time,
+                iv == null || iv.isEmpty() ? null : iv,
+                cipherText == null || cipherText.isEmpty() ? null : cipherText);
     }
 
     /**
