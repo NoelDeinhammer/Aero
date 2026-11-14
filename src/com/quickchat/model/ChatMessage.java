@@ -24,20 +24,32 @@ public class ChatMessage {
     private final String formattedTime;
     private final String iv;
     private final String cipherText;
+    private final FileAttachment attachment;
 
     public ChatMessage(String peerId, String senderName, String text, boolean incoming) {
-        this(peerId, senderName, text, incoming, null, null);
+        this(peerId, senderName, text, incoming, null, null, null);
     }
 
     public ChatMessage(String peerId, String senderName, String text, boolean incoming,
                        String iv, String cipherText) {
+        this(peerId, senderName, text, incoming, iv, cipherText, null);
+    }
+
+    public ChatMessage(String peerId, String senderName, String text, boolean incoming,
+                       FileAttachment attachment) {
+        this(peerId, senderName, text, incoming, null, null, attachment);
+    }
+
+    public ChatMessage(String peerId, String senderName, String text, boolean incoming,
+                       String iv, String cipherText, FileAttachment attachment) {
         this.peerId = peerId;
         this.senderName = senderName;
-        this.text = text;
+        this.text = text == null ? "" : text;
         this.incoming = incoming;
         this.formattedTime = LocalTime.now().format(TIME_FORMAT);
         this.iv = iv;
         this.cipherText = cipherText;
+        this.attachment = attachment;
     }
 
     /**
@@ -47,7 +59,16 @@ public class ChatMessage {
     public static ChatMessage encryptedIncoming(String peerId, String senderName,
                                                 String iv, String cipherText) {
         return new ChatMessage(peerId, senderName,
-                I18n.t(I18n.Key.ENCRYPTED_MESSAGE), true, iv, cipherText);
+                I18n.t(I18n.Key.ENCRYPTED_MESSAGE), true, iv, cipherText, null);
+    }
+
+    /**
+     * Creates an incoming group file message whose metadata and file contents are encrypted.
+     */
+    public static ChatMessage encryptedFileIncoming(String peerId, String senderName,
+                                                    FileAttachment attachment) {
+        return new ChatMessage(peerId, senderName,
+                I18n.t(I18n.Key.ENCRYPTED_FILE), true, null, null, attachment);
     }
 
     /**
@@ -105,5 +126,13 @@ public class ChatMessage {
 
     public String getCipherText() {
         return cipherText;
+    }
+
+    public FileAttachment getAttachment() {
+        return attachment;
+    }
+
+    public boolean hasAttachment() {
+        return attachment != null;
     }
 }

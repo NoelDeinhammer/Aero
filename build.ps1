@@ -236,7 +236,7 @@ $common = @(
     "--main-jar", "aero.jar",
     "--main-class", "com.quickchat.Main",
     "--add-modules", "java.base,java.desktop,java.logging",
-    "--java-options", "-Xmx128m",
+    "--java-options", "-Xmx256m",
     "--java-options", "-Dfile.encoding=UTF-8",
     "--dest", $outputDir
 )

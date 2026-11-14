@@ -4,16 +4,22 @@ import com.quickchat.config.AppSettings;
 import com.quickchat.i18n.I18n;
 import com.quickchat.model.ChatGroup;
 import com.quickchat.model.ChatMessage;
+import com.quickchat.model.FileAttachment;
 import com.quickchat.model.Peer;
 import com.quickchat.net.PeerNetwork;
 import com.quickchat.security.GroupCrypto;
 
+import javax.imageio.ImageIO;
+import javax.swing.AbstractAction;
+import javax.swing.Action;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
 import javax.swing.ButtonGroup;
+import javax.swing.ImageIcon;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
+import javax.swing.JComponent;
 import javax.swing.JDialog;
 import javax.swing.JLabel;
 import javax.swing.JMenuItem;
@@ -30,11 +36,13 @@ import javax.swing.KeyStroke;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.Timer;
+import javax.swing.TransferHandler;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import javax.swing.text.AbstractDocument;
 import javax.swing.text.AttributeSet;
 import javax.swing.text.BadLocationException;
+import javax.swing.text.DefaultEditorKit;
 import javax.swing.text.DocumentFilter;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
@@ -42,19 +50,38 @@ import java.awt.Color;
 import java.awt.Component;
 import java.awt.Cursor;
 import java.awt.Dimension;
+import java.awt.FileDialog;
 import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.GraphicsDevice;
 import java.awt.GraphicsEnvironment;
+import java.awt.Image;
 import java.awt.Insets;
 import java.awt.Point;
 import java.awt.Rectangle;
+import java.awt.Toolkit;
+import java.awt.datatransfer.DataFlavor;
+import java.awt.datatransfer.Transferable;
+import java.awt.event.ActionEvent;
+import java.awt.event.InputEvent;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.geom.RoundRectangle2D;
+import java.awt.image.BufferedImage;
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.security.GeneralSecurityException;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Base64;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -71,6 +98,10 @@ import java.util.function.Consumer;
 public class ChatPopupWindow extends JDialog {
     private static final int WIDTH = 350;
     private static final int HEIGHT = 470;
+    private static final int MAX_INLINE_IMG_W = 216;
+    private static final int MAX_INLINE_IMG_H = 260;
+    private static final DateTimeFormatter SCREENSHOT_TIME =
+            DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
     private static final String CARD_PEERS = "PEERS";
     private static final String CARD_CHAT = "CHAT";
     private static final String CARD_SETTINGS = "SETTINGS";
@@ -102,6 +133,10 @@ public class ChatPopupWindow extends JDialog {
     private final JScrollPane messagesScroll;
     private final JTextField inputField = new JTextField();
     private final JLabel messageCounter = new JLabel();
+    private final JButton attachButton = new JButton();
+    private final JPanel attachmentStrip = new JPanel();
+    private final List<PendingAttachment> pendingAttachments = new ArrayList<>();
+    private final Map<String, ImageIcon> inlineImageCache = new HashMap<>();
 
     // Settings view
     private final JTextField displayNameField = new JTextField();
@@ -160,8 +195,22 @@ public class ChatPopupWindow extends JDialog {
         messagesScroll.getVerticalScrollBar().setUnitIncrement(14);
         messagesScroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
 
+        attachmentStrip.setLayout(new BoxLayout(attachmentStrip, BoxLayout.Y_AXIS));
+        attachmentStrip.setBackground(Theme.BG_HEADER);
+        attachmentStrip.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createMatteBorder(1, 0, 0, 0, Theme.BORDER),
+                BorderFactory.createEmptyBorder(6, 10, 4, 10)
+        ));
+        attachmentStrip.setVisible(false);
+
+        JPanel southPanel = new JPanel(new BorderLayout());
+        southPanel.setOpaque(false);
+        southPanel.add(attachmentStrip, BorderLayout.NORTH);
+        southPanel.add(buildInputBar(), BorderLayout.SOUTH);
+
         chatView.add(messagesScroll, BorderLayout.CENTER);
-        chatView.add(buildInputBar(), BorderLayout.SOUTH);
+        chatView.add(southPanel, BorderLayout.SOUTH);
+        installChatClipboardAndDrop(chatView);
 
         contentCards.add(chatView, CARD_CHAT);
         contentCards.add(buildSettingsView(), CARD_SETTINGS);
@@ -349,11 +398,17 @@ public class ChatPopupWindow extends JDialog {
 
     public void addIncomingMessage(Peer sender, ChatMessage message) {
         String key = peerKey(sender.getId());
-        histories.computeIfAbsent(key, k -> new ArrayList<>()).add(message);
+        List<ChatMessage> list = histories.computeIfAbsent(key, k -> new ArrayList<>());
+        boolean wasEmpty = list.isEmpty();
+        list.add(message);
 
         if (isChattingWith(sender)) {
-            appendMessageBubble(message, false);
-            scrollToBottom();
+            if (wasEmpty) {
+                renderMessages();
+            } else {
+                appendMessageBubble(message, false);
+                scrollToBottom();
+            }
         } else {
             unreadCounts.merge(key, 1, Integer::sum);
             renderPeerList();
@@ -393,14 +448,103 @@ public class ChatPopupWindow extends JDialog {
         }
 
         String key = groupKey(local.getId());
-        histories.computeIfAbsent(key, k -> new ArrayList<>()).add(message);
+        List<ChatMessage> list = histories.computeIfAbsent(key, k -> new ArrayList<>());
+        boolean wasEmpty = list.isEmpty();
+        list.add(message);
 
         if (isChattingWithGroup(local)) {
-            appendMessageBubble(message, true);
-            scrollToBottom();
+            if (wasEmpty) {
+                renderMessages();
+            } else {
+                appendMessageBubble(message, true);
+                scrollToBottom();
+            }
         } else {
             unreadCounts.merge(key, 1, Integer::sum);
             renderPeerList();
+        }
+        return local;
+    }
+
+    public void handleIncomingFileStarted(Peer sender, ChatMessage message) {
+        addIncomingMessage(sender, message);
+    }
+
+    public void handleIncomingFileCompleted(Peer sender, ChatMessage message, boolean success) {
+        if (message.getAttachment() != null) {
+            message.getAttachment().notifyListener();
+        }
+        if (isChattingWith(sender)) {
+            renderMessages();
+        }
+    }
+
+    public ChatGroup handleIncomingGroupFileStarted(Peer sender, ChatGroup incoming, ChatMessage message) {
+        if (settings.isGroupDeleted(incoming.getId())) {
+            notifySenderThatGroupWasDeleted(sender, incoming.getId());
+            return null;
+        }
+        ChatGroup local = settings.getGroup(incoming.getId());
+        if (local == null) {
+            local = incoming;
+            local.addMember(sender.getId(), sender.getName());
+            settings.addGroup(local);
+        } else {
+            local.addMember(sender.getId(), sender.getName());
+            if (local.mergeFrom(incoming)) {
+                settings.save();
+            }
+        }
+
+        String key = groupKey(local.getId());
+        List<ChatMessage> list = histories.computeIfAbsent(key, k -> new ArrayList<>());
+        boolean wasEmpty = list.isEmpty();
+        list.add(message);
+
+        if (isChattingWithGroup(local)) {
+            if (wasEmpty) {
+                renderMessages();
+            } else {
+                appendMessageBubble(message, true);
+                scrollToBottom();
+            }
+        } else {
+            unreadCounts.merge(key, 1, Integer::sum);
+            renderPeerList();
+        }
+        return local;
+    }
+
+    public ChatGroup handleIncomingGroupFileCompleted(Peer sender, ChatGroup incoming,
+                                                      ChatMessage message, boolean success,
+                                                      Runnable onReady) {
+        ChatGroup local = settings.getGroup(incoming.getId());
+        if (local == null || settings.isGroupDeleted(incoming.getId())) {
+            return null;
+        }
+        FileAttachment att = message.getAttachment();
+        if (success && att != null && att.isEncryptedPendingUnlock() && local.hasPasswordKey()) {
+            byte[] key = local.getPasswordKeyBytes();
+            if (key != null) {
+                decryptGroupFileAsync(local, message, key, () -> {
+                    if (isChattingWithGroup(local)) {
+                        renderMessages();
+                    }
+                    if (onReady != null) {
+                        onReady.run();
+                    }
+                });
+                return local;
+            }
+        }
+        if (att != null) {
+            att.notifyListener();
+        }
+        if (isChattingWithGroup(local)) {
+            renderMessages();
+        }
+        if (onReady != null) {
+            onReady.run();
         }
         return local;
     }
@@ -728,17 +872,27 @@ public class ChatPopupWindow extends JDialog {
     }
 
     private JPanel buildInputBar() {
-        JPanel bar = new JPanel(new BorderLayout(8, 0));
+        JPanel bar = new JPanel(new BorderLayout(6, 0));
         bar.setBackground(Theme.BG_HEADER);
         bar.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createMatteBorder(1, 0, 0, 0, Theme.BORDER),
                 BorderFactory.createEmptyBorder(8, 10, 8, 10)
         ));
 
+        attachButton.setIcon(UiIcons.paperclip(Theme.TEXT_PRIMARY, 16));
+        attachButton.setBackground(Theme.BG_INPUT);
+        attachButton.setFocusPainted(false);
+        attachButton.setBorder(BorderFactory.createLineBorder(Theme.BORDER, 1));
+        attachButton.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        attachButton.setPreferredSize(new Dimension(32, 32));
+        attachButton.setToolTipText(I18n.t(I18n.Key.ATTACH_FILE_TOOLTIP));
+        attachButton.addActionListener(e -> promptSelectFiles());
+
         styleTextField(inputField);
         inputField.setFont(Theme.FONT_BODY);
         inputField.addActionListener(e -> sendCurrentMessage());
         installLengthLimit(inputField, ChatMessage.MAX_TEXT_LENGTH);
+        installInputPasteHandler();
         inputField.getDocument().addDocumentListener(new DocumentListener() {
             @Override
             public void insertUpdate(DocumentEvent e) {
@@ -776,6 +930,7 @@ public class ChatPopupWindow extends JDialog {
         right.add(messageCounter);
         right.add(sendBtn);
 
+        bar.add(attachButton, BorderLayout.WEST);
         bar.add(inputField, BorderLayout.CENTER);
         bar.add(right, BorderLayout.EAST);
         return bar;
@@ -790,7 +945,7 @@ public class ChatPopupWindow extends JDialog {
 
     private void sendCurrentMessage() {
         String text = inputField.getText().trim();
-        if (text.isEmpty()) return;
+        if (text.isEmpty() && pendingAttachments.isEmpty()) return;
         if (text.length() > ChatMessage.MAX_TEXT_LENGTH) {
             JOptionPane.showMessageDialog(this,
                     I18n.t(I18n.Key.MESSAGE_TOO_LONG,
@@ -800,25 +955,334 @@ public class ChatPopupWindow extends JDialog {
             return;
         }
 
+        if (!pendingAttachments.isEmpty()) {
+            sendPendingAttachments(text);
+            return;
+        }
+
         if (activeGroup != null) {
             inputField.setText("");
+            String key = groupKey(activeGroup.getId());
+            List<ChatMessage> list = histories.computeIfAbsent(key, k -> new ArrayList<>());
+            boolean wasEmpty = list.isEmpty();
             int delivered = network.sendGroupMessage(activeGroup, text);
             String display = delivered > 0 ? text : I18n.t(I18n.Key.NOT_DELIVERED, text);
             ChatMessage msg = new ChatMessage(activeGroup.getId(), network.getMyName(), display, false);
-            histories.computeIfAbsent(groupKey(activeGroup.getId()), k -> new ArrayList<>()).add(msg);
-            appendMessageBubble(msg, false);
-            scrollToBottom();
+            list.add(msg);
+            if (wasEmpty) {
+                renderMessages();
+            } else {
+                appendMessageBubble(msg, false);
+                scrollToBottom();
+            }
             return;
         }
 
         if (activePeer == null) return;
         inputField.setText("");
+        String key = peerKey(activePeer.getId());
+        List<ChatMessage> list = histories.computeIfAbsent(key, k -> new ArrayList<>());
+        boolean wasEmpty = list.isEmpty();
         boolean sent = network.sendMessage(activePeer, text);
         String display = sent ? text : I18n.t(I18n.Key.NOT_DELIVERED, text);
         ChatMessage msg = new ChatMessage(activePeer.getId(), network.getMyName(), display, false);
-        histories.computeIfAbsent(peerKey(activePeer.getId()), k -> new ArrayList<>()).add(msg);
-        appendMessageBubble(msg, false);
-        scrollToBottom();
+        list.add(msg);
+        if (wasEmpty) {
+            renderMessages();
+        } else {
+            appendMessageBubble(msg, false);
+            scrollToBottom();
+        }
+    }
+
+    private void sendPendingAttachments(String text) {
+        if (activeGroup == null && activePeer == null) {
+            return;
+        }
+        List<PendingAttachment> toSend = new ArrayList<>(pendingAttachments);
+        pendingAttachments.clear();
+        renderAttachmentStrip();
+        inputField.setText("");
+
+        String targetKey = activeGroup != null
+                ? groupKey(activeGroup.getId())
+                : peerKey(activePeer.getId());
+        String targetId = activeGroup != null ? activeGroup.getId() : activePeer.getId();
+
+        List<ChatMessage> list = histories.computeIfAbsent(targetKey, k -> new ArrayList<>());
+        boolean wasEmpty = list.isEmpty();
+
+        for (int i = 0; i < toSend.size(); i++) {
+            PendingAttachment pa = toSend.get(i);
+            String caption = (i == 0) ? text : "";
+            FileAttachment att = new FileAttachment(
+                    null, pa.displayName, pa.size, pa.image, pa.file,
+                    FileAttachment.Status.TRANSFERRING);
+            ChatMessage msg = new ChatMessage(targetId, network.getMyName(), caption, false, att);
+            list.add(msg);
+
+            if (activeGroup != null) {
+                network.sendGroupFileAsync(activeGroup, pa.file, att, caption);
+            } else {
+                network.sendFileAsync(activePeer, pa.file, att, caption);
+            }
+
+            if (!wasEmpty) {
+                appendMessageBubble(msg, false);
+            }
+        }
+
+        if (wasEmpty) {
+            renderMessages();
+        } else {
+            scrollToBottom();
+        }
+    }
+
+    private void promptSelectFiles() {
+        FileDialog fd = new FileDialog(this, I18n.t(I18n.Key.SELECT_FILE_TITLE), FileDialog.LOAD);
+        fd.setMultipleMode(true);
+        fd.setVisible(true);
+        File[] files = fd.getFiles();
+        if (files != null && files.length > 0) {
+            stageFiles(Arrays.asList(files));
+        }
+        SwingUtilities.invokeLater(inputField::requestFocusInWindow);
+    }
+
+    private void installInputPasteHandler() {
+        Action defaultPaste = inputField.getActionMap().get(DefaultEditorKit.pasteAction);
+        inputField.getActionMap().put(DefaultEditorKit.pasteAction, new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                if (!handleClipboardPaste(false) && defaultPaste != null) {
+                    defaultPaste.actionPerformed(e);
+                }
+            }
+        });
+    }
+
+    private void installChatClipboardAndDrop(JPanel chatView) {
+        chatView.registerKeyboardAction(
+                e -> {
+                    if (!inputField.isFocusOwner()) {
+                        handleClipboardPaste(true);
+                    }
+                },
+                KeyStroke.getKeyStroke(KeyEvent.VK_V, InputEvent.CTRL_DOWN_MASK),
+                JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT
+        );
+
+        TransferHandler dropHandler = new TransferHandler() {
+            @Override
+            public boolean canImport(TransferSupport support) {
+                return support.isDataFlavorSupported(DataFlavor.javaFileListFlavor)
+                        || support.isDataFlavorSupported(DataFlavor.imageFlavor);
+            }
+
+            @Override
+            public boolean importData(TransferSupport support) {
+                if (!canImport(support)) {
+                    return false;
+                }
+                return handleTransferable(support.getTransferable(), false);
+            }
+        };
+        chatView.setTransferHandler(dropHandler);
+        messagesContainer.setTransferHandler(dropHandler);
+        messagesScroll.setTransferHandler(dropHandler);
+    }
+
+    private boolean handleClipboardPaste(boolean allowTextIntoInput) {
+        if (!CARD_CHAT.equals(currentCard)) {
+            return false;
+        }
+        try {
+            Transferable transferable = Toolkit.getDefaultToolkit()
+                    .getSystemClipboard().getContents(null);
+            if (transferable == null) {
+                return false;
+            }
+            return handleTransferable(transferable, allowTextIntoInput);
+        } catch (IllegalStateException e) {
+            return false;
+        }
+    }
+
+    private boolean handleTransferable(Transferable transferable, boolean allowTextIntoInput) {
+        try {
+            if (transferable.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                Object data = transferable.getTransferData(DataFlavor.javaFileListFlavor);
+                if (data instanceof List<?>) {
+                    List<File> files = new ArrayList<>();
+                    for (Object item : (List<?>) data) {
+                        if (item instanceof File) {
+                            files.add((File) item);
+                        }
+                    }
+                    if (!files.isEmpty()) {
+                        stageFiles(files);
+                        inputField.requestFocusInWindow();
+                        return true;
+                    }
+                }
+            }
+
+            if (transferable.isDataFlavorSupported(DataFlavor.imageFlavor)) {
+                Object data = transferable.getTransferData(DataFlavor.imageFlavor);
+                if (data instanceof Image) {
+                    BufferedImage bi = UiIcons.toBufferedImage((Image) data);
+                    if (bi != null) {
+                        stageClipboardImage(bi);
+                        inputField.requestFocusInWindow();
+                        return true;
+                    }
+                }
+            }
+
+            if (allowTextIntoInput && transferable.isDataFlavorSupported(DataFlavor.stringFlavor)) {
+                inputField.requestFocusInWindow();
+                inputField.paste();
+                return true;
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
+    private void stageClipboardImage(BufferedImage image) {
+        String name = "screenshot-" + SCREENSHOT_TIME.format(LocalDateTime.now()) + ".png";
+        new Thread(() -> {
+            try {
+                Path dir = network.getTransferDir();
+                Files.createDirectories(dir);
+                Path out = dir.resolve(UUID.randomUUID().toString().substring(0, 8) + "-" + name);
+                ImageIO.write(image, "png", out.toFile());
+                long size = Files.size(out);
+                ImageIcon thumb = createThumbIcon(out);
+                PendingAttachment pa = new PendingAttachment(out, name, size, true, thumb);
+                SwingUtilities.invokeLater(() -> {
+                    pendingAttachments.add(pa);
+                    renderAttachmentStrip();
+                });
+            } catch (IOException ex) {
+                SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(
+                        this,
+                        I18n.t(I18n.Key.FILE_READ_ERROR, ex.getMessage()),
+                        I18n.t(I18n.Key.AERO_ERROR_TITLE),
+                        JOptionPane.ERROR_MESSAGE));
+            }
+        }, "aero-clipboard-img").start();
+    }
+
+    private void stageFiles(List<File> files) {
+        List<File> valid = new ArrayList<>();
+        for (File f : files) {
+            if (f != null && f.isFile() && f.canRead()) {
+                valid.add(f);
+            }
+        }
+        if (valid.isEmpty()) {
+            return;
+        }
+        new Thread(() -> {
+            List<PendingAttachment> staged = new ArrayList<>();
+            for (File f : valid) {
+                Path path = f.toPath();
+                String name = FileAttachment.sanitizeFileName(f.getName());
+                long size = f.length();
+                boolean isImage = FileAttachment.isImageFileName(name);
+                ImageIcon thumb = null;
+                if (isImage) {
+                    thumb = createThumbIcon(path);
+                    if (thumb == null) {
+                        isImage = false;
+                    }
+                }
+                staged.add(new PendingAttachment(path, name, size, isImage, thumb));
+            }
+            SwingUtilities.invokeLater(() -> {
+                pendingAttachments.addAll(staged);
+                renderAttachmentStrip();
+            });
+        }, "aero-stage-files").start();
+    }
+
+    private ImageIcon createThumbIcon(Path path) {
+        try {
+            BufferedImage img = UiIcons.loadScaledImage(path, 34, 34);
+            return img == null ? null : new ImageIcon(img);
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    private void renderAttachmentStrip() {
+        attachmentStrip.removeAll();
+        if (pendingAttachments.isEmpty()) {
+            attachmentStrip.setVisible(false);
+            attachmentStrip.revalidate();
+            attachmentStrip.repaint();
+            return;
+        }
+
+        attachmentStrip.setVisible(true);
+        for (int i = 0; i < pendingAttachments.size(); i++) {
+            final int index = i;
+            PendingAttachment pa = pendingAttachments.get(i);
+
+            JPanel item = new JPanel(new BorderLayout(8, 0));
+            item.setBackground(Theme.BG_CARD);
+            item.setBorder(BorderFactory.createCompoundBorder(
+                    BorderFactory.createLineBorder(Theme.BORDER, 1),
+                    BorderFactory.createEmptyBorder(4, 6, 4, 6)
+            ));
+            item.setMaximumSize(new Dimension(Integer.MAX_VALUE, 44));
+
+            JLabel iconLabel = new JLabel(pa.thumbnail != null
+                    ? pa.thumbnail
+                    : UiIcons.fileBadge(Theme.TEXT_PRIMARY, 20));
+            iconLabel.setPreferredSize(new Dimension(34, 34));
+            iconLabel.setHorizontalAlignment(JLabel.CENTER);
+
+            JPanel info = new JPanel(new BorderLayout(0, 1));
+            info.setOpaque(false);
+            JLabel nameLabel = new JLabel(pa.displayName);
+            nameLabel.setFont(Theme.FONT_BOLD);
+            nameLabel.setForeground(Theme.TEXT_PRIMARY);
+            JLabel sizeLabel = new JLabel(FileAttachment.formatSize(pa.size));
+            sizeLabel.setFont(Theme.FONT_SMALL);
+            sizeLabel.setForeground(Theme.TEXT_MUTED);
+            info.add(nameLabel, BorderLayout.NORTH);
+            info.add(sizeLabel, BorderLayout.SOUTH);
+
+            JButton removeBtn = new JButton("×");
+            removeBtn.setFont(Theme.FONT_TITLE);
+            removeBtn.setForeground(Theme.TEXT_MUTED);
+            removeBtn.setContentAreaFilled(false);
+            removeBtn.setBorderPainted(false);
+            removeBtn.setFocusPainted(false);
+            removeBtn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            removeBtn.setMargin(new Insets(0, 4, 0, 4));
+            removeBtn.setToolTipText(I18n.t(I18n.Key.REMOVE_ATTACHMENT_TOOLTIP));
+            removeBtn.addActionListener(e -> {
+                if (index < pendingAttachments.size()) {
+                    pendingAttachments.remove(index);
+                    renderAttachmentStrip();
+                }
+            });
+
+            item.add(iconLabel, BorderLayout.WEST);
+            item.add(info, BorderLayout.CENTER);
+            item.add(removeBtn, BorderLayout.EAST);
+
+            attachmentStrip.add(item);
+            if (i < pendingAttachments.size() - 1) {
+                attachmentStrip.add(Box.createVerticalStrut(4));
+            }
+        }
+        attachmentStrip.revalidate();
+        attachmentStrip.repaint();
     }
 
     private void renderPeerList() {
@@ -1039,9 +1503,8 @@ public class ChatPopupWindow extends JDialog {
     private void appendMessageBubble(ChatMessage msg, boolean showSender) {
         JPanel row = new JPanel(new FlowLayout(msg.isIncoming() ? FlowLayout.LEFT : FlowLayout.RIGHT, 0, 2));
         row.setOpaque(false);
-        row.setMaximumSize(new Dimension(Integer.MAX_VALUE, 500));
 
-        JPanel bubble = new JPanel(new BorderLayout(0, 2));
+        JPanel bubble = new JPanel(new BorderLayout(0, 4));
         bubble.setBackground(msg.isIncoming() ? Theme.BUBBLE_IN : Theme.BUBBLE_OUT);
         bubble.setBorder(BorderFactory.createEmptyBorder(7, 10, 7, 10));
 
@@ -1052,27 +1515,292 @@ public class ChatPopupWindow extends JDialog {
             bubble.add(sender, BorderLayout.NORTH);
         }
 
-        JTextArea text = new JTextArea(msg.getText());
-        text.setEditable(false);
-        text.setWrapStyleWord(true);
-        text.setLineWrap(true);
-        text.setOpaque(false);
-        text.setForeground(Theme.TEXT_PRIMARY);
-        text.setFont(Theme.FONT_BODY);
-        text.setColumns(20);
+        JPanel body = new JPanel();
+        body.setLayout(new BoxLayout(body, BoxLayout.Y_AXIS));
+        body.setOpaque(false);
+
+        FileAttachment att = msg.getAttachment();
+        if (att != null) {
+            JPanel attPanel = buildAttachmentView(msg, att, row);
+            attPanel.setAlignmentX(Component.LEFT_ALIGNMENT);
+            body.add(attPanel);
+        }
+
+        String msgText = msg.getText();
+        boolean showText = att == null || (!att.isEncryptedPendingUnlock() && msgText != null && !msgText.isEmpty());
+        if (showText) {
+            if (att != null) {
+                body.add(Box.createVerticalStrut(5));
+            }
+            JTextArea text = createSelectableBubbleText(msgText);
+            text.setAlignmentX(Component.LEFT_ALIGNMENT);
+            body.add(text);
+        }
 
         JLabel time = new JLabel(msg.getFormattedTime());
         time.setFont(Theme.FONT_SMALL);
         time.setForeground(new Color(220, 224, 235, 170));
         time.setHorizontalAlignment(JLabel.RIGHT);
 
-        bubble.add(text, BorderLayout.CENTER);
+        bubble.add(body, BorderLayout.CENTER);
         bubble.add(time, BorderLayout.SOUTH);
         row.add(bubble);
+        updateRowMaxHeight(row);
 
         messagesContainer.add(row);
         messagesContainer.add(Box.createVerticalStrut(4));
         messagesContainer.revalidate();
+    }
+
+    private JTextArea createSelectableBubbleText(String content) {
+        JTextArea text = new JTextArea(content);
+        text.setEditable(false);
+        text.setWrapStyleWord(true);
+        text.setLineWrap(true);
+        text.setOpaque(false);
+        text.setForeground(Theme.TEXT_PRIMARY);
+        text.setSelectionColor(new Color(255, 255, 255, 80));
+        text.setSelectedTextColor(Color.WHITE);
+        text.setFont(Theme.FONT_BODY);
+        text.setColumns(20);
+
+        JPopupMenu menu = new JPopupMenu();
+        JMenuItem copyItem = new JMenuItem(I18n.t(I18n.Key.COPY_TEXT));
+        copyItem.addActionListener(e -> {
+            if (text.getSelectedText() == null || text.getSelectedText().isEmpty()) {
+                text.selectAll();
+            }
+            text.copy();
+        });
+        menu.add(copyItem);
+        text.setComponentPopupMenu(menu);
+        return text;
+    }
+
+    private JPanel buildAttachmentView(ChatMessage msg, FileAttachment att, JPanel row) {
+        JPanel container = new JPanel(new BorderLayout(0, 4));
+        container.setOpaque(false);
+
+        Runnable rebuild = () -> {
+            container.removeAll();
+            populateAttachmentContainer(container, msg, att, row);
+            container.revalidate();
+            container.repaint();
+            updateRowMaxHeight(row);
+            messagesContainer.revalidate();
+        };
+
+        populateAttachmentContainer(container, msg, att, row);
+        att.setChangeListener(() -> SwingUtilities.invokeLater(rebuild));
+        return container;
+    }
+
+    private void populateAttachmentContainer(JPanel container, ChatMessage msg,
+                                             FileAttachment att, JPanel row) {
+        boolean readyToView = !att.isEncryptedPendingUnlock()
+                && att.getLocalPath() != null
+                && (!msg.isIncoming() || att.getStatus() == FileAttachment.Status.COMPLETED);
+
+        if (att.isImage() && readyToView) {
+            JPanel imageRow = new JPanel(new BorderLayout(6, 0));
+            imageRow.setOpaque(false);
+
+            JLabel imgLabel = new JLabel();
+            imgLabel.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            imgLabel.setToolTipText(I18n.t(I18n.Key.OPEN_PREVIEW_TOOLTIP));
+            imgLabel.setFocusable(true);
+
+            ImageIcon cached = inlineImageCache.get(att.getTransferId());
+            if (cached != null) {
+                imgLabel.setIcon(cached);
+            } else {
+                imgLabel.setText(att.getFileName());
+                imgLabel.setForeground(Theme.TEXT_PRIMARY);
+                imgLabel.setFont(Theme.FONT_SMALL);
+                loadInlineImageAsync(att, imgLabel, row);
+            }
+
+            imgLabel.addMouseListener(new MouseAdapter() {
+                @Override
+                public void mouseClicked(MouseEvent e) {
+                    if (SwingUtilities.isLeftMouseButton(e)) {
+                        new ImagePreviewDialog(ChatPopupWindow.this, att,
+                                ChatPopupWindow.this::downloadAttachment).setVisible(true);
+                    }
+                }
+            });
+
+            imgLabel.registerKeyboardAction(
+                    e -> UiIcons.copyImageToClipboard(att.getLocalPath()),
+                    KeyStroke.getKeyStroke(KeyEvent.VK_C, InputEvent.CTRL_DOWN_MASK),
+                    JComponent.WHEN_FOCUSED
+            );
+
+            JPopupMenu popup = new JPopupMenu();
+            JMenuItem copyImg = new JMenuItem(I18n.t(I18n.Key.COPY_IMAGE));
+            copyImg.addActionListener(e -> UiIcons.copyImageToClipboard(att.getLocalPath()));
+            JMenuItem saveImg = new JMenuItem(I18n.t(I18n.Key.DOWNLOAD_TOOLTIP));
+            saveImg.addActionListener(e -> downloadAttachment(att));
+            popup.add(copyImg);
+            popup.add(saveImg);
+            imgLabel.setComponentPopupMenu(popup);
+
+            JButton dlBtn = createDownloadButton(att, true);
+            JPanel dlWrap = new JPanel(new BorderLayout());
+            dlWrap.setOpaque(false);
+            dlWrap.add(dlBtn, BorderLayout.SOUTH);
+
+            imageRow.add(imgLabel, BorderLayout.CENTER);
+            imageRow.add(dlWrap, BorderLayout.EAST);
+
+            JLabel metaLabel = new JLabel(buildAttachmentSubtitle(msg, att, true));
+            metaLabel.setFont(Theme.FONT_SMALL);
+            metaLabel.setForeground(att.getStatus() == FileAttachment.Status.FAILED
+                    ? Theme.DANGER : new Color(225, 228, 240, 200));
+
+            container.add(imageRow, BorderLayout.CENTER);
+            container.add(metaLabel, BorderLayout.SOUTH);
+            return;
+        }
+
+        // File card (or locked encrypted file, or in-progress incoming transfer)
+        JPanel card = new JPanel(new BorderLayout(8, 0));
+        card.setBackground(new Color(0, 0, 0, 45));
+        card.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(new Color(255, 255, 255, 32), 1),
+                BorderFactory.createEmptyBorder(6, 8, 6, 8)
+        ));
+
+        JLabel icon = new JLabel(UiIcons.fileBadge(Theme.TEXT_PRIMARY, 22));
+        icon.setPreferredSize(new Dimension(24, 28));
+
+        String titleText = att.isEncryptedPendingUnlock()
+                ? "\uD83D\uDD12 " + I18n.t(I18n.Key.ENCRYPTED_FILE)
+                : truncateFileName(att.getFileName(), 24);
+        JLabel nameLabel = new JLabel(titleText);
+        nameLabel.setFont(Theme.FONT_BOLD);
+        nameLabel.setForeground(Theme.TEXT_PRIMARY);
+        if (!att.isEncryptedPendingUnlock()) {
+            nameLabel.setToolTipText(att.getFileName());
+        }
+
+        JLabel subLabel = new JLabel(buildAttachmentSubtitle(msg, att, false));
+        subLabel.setFont(Theme.FONT_SMALL);
+        subLabel.setForeground(att.getStatus() == FileAttachment.Status.FAILED
+                ? Theme.DANGER : new Color(225, 228, 240, 200));
+
+        JPanel info = new JPanel(new BorderLayout(0, 1));
+        info.setOpaque(false);
+        info.add(nameLabel, BorderLayout.NORTH);
+        info.add(subLabel, BorderLayout.SOUTH);
+
+        JButton dlBtn = createDownloadButton(att, readyToView);
+
+        card.add(icon, BorderLayout.WEST);
+        card.add(info, BorderLayout.CENTER);
+        card.add(dlBtn, BorderLayout.EAST);
+        container.add(card, BorderLayout.CENTER);
+    }
+
+    private JButton createDownloadButton(FileAttachment att, boolean enabled) {
+        JButton btn = new JButton(UiIcons.download(
+                enabled ? Color.WHITE : new Color(255, 255, 255, 90), 15));
+        btn.setPreferredSize(new Dimension(30, 30));
+        btn.setBackground(new Color(0, 0, 0, 65));
+        btn.setFocusPainted(false);
+        btn.setBorder(BorderFactory.createLineBorder(new Color(255, 255, 255, 45), 1));
+        btn.setCursor(Cursor.getPredefinedCursor(enabled ? Cursor.HAND_CURSOR : Cursor.DEFAULT_CURSOR));
+        btn.setEnabled(enabled);
+        btn.setToolTipText(I18n.t(I18n.Key.DOWNLOAD_TOOLTIP));
+        btn.addActionListener(e -> downloadAttachment(att));
+        return btn;
+    }
+
+    private String buildAttachmentSubtitle(ChatMessage msg, FileAttachment att, boolean includeName) {
+        String sizeStr = FileAttachment.formatSize(att.getFileSize());
+        String base = includeName ? truncateFileName(att.getFileName(), 22) + " · " + sizeStr : sizeStr;
+        if (att.getStatus() == FileAttachment.Status.TRANSFERRING) {
+            I18n.Key key = msg.isIncoming() ? I18n.Key.TRANSFERRING_RECV : I18n.Key.TRANSFERRING_SEND;
+            return sizeStr + " · " + I18n.t(key, att.getProgressPercent());
+        }
+        if (att.getStatus() == FileAttachment.Status.FAILED) {
+            return sizeStr + " · " + I18n.t(I18n.Key.TRANSFER_FAILED);
+        }
+        return base;
+    }
+
+    private void loadInlineImageAsync(FileAttachment att, JLabel target, JPanel row) {
+        Path path = att.getLocalPath();
+        if (path == null) {
+            return;
+        }
+        new Thread(() -> {
+            try {
+                BufferedImage img = UiIcons.loadScaledImage(path, MAX_INLINE_IMG_W, MAX_INLINE_IMG_H);
+                if (img != null) {
+                    ImageIcon icon = new ImageIcon(img);
+                    SwingUtilities.invokeLater(() -> {
+                        inlineImageCache.put(att.getTransferId(), icon);
+                        target.setText(null);
+                        target.setIcon(icon);
+                        target.revalidate();
+                        updateRowMaxHeight(row);
+                        messagesContainer.revalidate();
+                        messagesContainer.repaint();
+                        scrollToBottom();
+                    });
+                }
+            } catch (IOException ignored) {
+            }
+        }, "aero-img-thumb").start();
+    }
+
+    private static void updateRowMaxHeight(JPanel row) {
+        Dimension pref = row.getPreferredSize();
+        row.setMaximumSize(new Dimension(Integer.MAX_VALUE, Math.max(32, pref.height + 6)));
+    }
+
+    private static String truncateFileName(String name, int maxChars) {
+        if (name == null || name.length() <= maxChars) {
+            return name == null ? "" : name;
+        }
+        int dot = name.lastIndexOf('.');
+        if (dot > 0 && name.length() - dot <= 7 && maxChars > 10) {
+            String ext = name.substring(dot);
+            int keep = maxChars - ext.length() - 1;
+            if (keep > 3) {
+                return name.substring(0, keep) + "\u2026" + ext;
+            }
+        }
+        return name.substring(0, maxChars - 1) + "\u2026";
+    }
+
+    private void downloadAttachment(FileAttachment att) {
+        if (att == null || att.isEncryptedPendingUnlock()) {
+            return;
+        }
+        Path src = att.getLocalPath();
+        if (src == null || !Files.isRegularFile(src)) {
+            return;
+        }
+        FileDialog fd = new FileDialog(this, I18n.t(I18n.Key.SAVE_FILE_TITLE), FileDialog.SAVE);
+        fd.setFile(att.getFileName());
+        fd.setVisible(true);
+        if (fd.getFile() == null) {
+            return;
+        }
+        Path dest = Paths.get(fd.getDirectory(), fd.getFile());
+        new Thread(() -> {
+            try {
+                Files.copy(src, dest, StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException ex) {
+                SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(
+                        this,
+                        I18n.t(I18n.Key.FILE_SAVE_ERROR, ex.getMessage()),
+                        I18n.t(I18n.Key.AERO_ERROR_TITLE),
+                        JOptionPane.ERROR_MESSAGE));
+            }
+        }, "aero-file-save").start();
     }
 
     private void scrollToBottom() {
@@ -1172,6 +1900,7 @@ public class ChatPopupWindow extends JDialog {
     private void applyLanguageTexts() {
         settingsButton.setToolTipText(I18n.t(I18n.Key.SETTINGS_TOOLTIP));
         membersButton.setToolTipText(I18n.t(I18n.Key.VIEW_MEMBERS));
+        attachButton.setToolTipText(I18n.t(I18n.Key.ATTACH_FILE_TOOLTIP));
         newGroupButton.setText(I18n.t(I18n.Key.GROUP_BUTTON));
         renameButton.setText(I18n.t(I18n.Key.RENAME_BUTTON));
         connectButton.setText(I18n.t(I18n.Key.IP_CONNECT));
@@ -1492,8 +2221,64 @@ public class ChatPopupWindow extends JDialog {
                             key, message.getIv(), message.getCipherText())));
                 } catch (GeneralSecurityException | IllegalArgumentException ignored) {
                 }
+            } else if (message.hasAttachment() && message.isIncoming()) {
+                FileAttachment att = message.getAttachment();
+                if (att.isEncryptedPendingUnlock() && att.getStatus() == FileAttachment.Status.COMPLETED) {
+                    decryptGroupFileAsync(group, message, key, () -> {
+                        if (isChattingWithGroup(group)) {
+                            renderMessages();
+                        }
+                    });
+                }
             }
         }
+    }
+
+    private void decryptGroupFileAsync(ChatGroup group, ChatMessage message, byte[] key, Runnable onDone) {
+        FileAttachment att = message.getAttachment();
+        if (att == null || !att.isEncryptedPendingUnlock() || att.getEncryptedPath() == null) {
+            return;
+        }
+        new Thread(() -> {
+            try {
+                String metaPlain = GroupCrypto.decrypt(key, att.getMetaIv(), att.getMetaCipherText());
+                String[] metaParts = metaPlain.split("\\|", -1);
+                if (metaParts.length < 3) {
+                    return;
+                }
+                boolean isImage = "1".equals(metaParts[0]);
+                String fileName = new String(Base64.getDecoder().decode(metaParts[1]), StandardCharsets.UTF_8);
+                String caption = ChatMessage.truncate(
+                        new String(Base64.getDecoder().decode(metaParts[2]), StandardCharsets.UTF_8));
+
+                Path plainPath = network.getTransferDir().resolve(att.getTransferId() + ".dat");
+                try (java.io.InputStream encIn = new java.io.BufferedInputStream(
+                        Files.newInputStream(att.getEncryptedPath()), 65_536);
+                     java.io.OutputStream plainOut = new java.io.BufferedOutputStream(
+                             Files.newOutputStream(plainPath), 65_536)) {
+                    GroupCrypto.decryptStream(key, encIn, plainOut, null);
+                }
+
+                try {
+                    Files.deleteIfExists(att.getEncryptedPath());
+                } catch (IOException ignored) {
+                }
+
+                att.setImage(isImage);
+                att.setFileName(fileName);
+                att.setLocalPath(plainPath);
+                att.setEncryptedPendingUnlock(false);
+                message.setDecryptedText(caption);
+
+                SwingUtilities.invokeLater(() -> {
+                    att.notifyListener();
+                    if (onDone != null) {
+                        onDone.run();
+                    }
+                });
+            } catch (Exception ignored) {
+            }
+        }, "aero-file-decrypt").start();
     }
 
     private void deleteGroup(ChatGroup group) {
@@ -1793,5 +2578,21 @@ public class ChatPopupWindow extends JDialog {
             }
         }
         centerOnScreen();
+    }
+
+    private static final class PendingAttachment {
+        final Path file;
+        final String displayName;
+        final long size;
+        final boolean image;
+        final ImageIcon thumbnail;
+
+        PendingAttachment(Path file, String displayName, long size, boolean image, ImageIcon thumbnail) {
+            this.file = file;
+            this.displayName = displayName;
+            this.size = size;
+            this.image = image;
+            this.thumbnail = thumbnail;
+        }
     }
 }

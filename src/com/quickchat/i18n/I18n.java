@@ -107,7 +107,28 @@ public final class I18n {
         TRAY_SETTINGS,
         TRAY_RENAME,
         TRAY_EXIT,
-        HOTKEY_TRAY_ONLY
+        HOTKEY_TRAY_ONLY,
+        ATTACH_FILE_TOOLTIP,
+        SELECT_FILE_TITLE,
+        SAVE_FILE_TITLE,
+        DOWNLOAD_TOOLTIP,
+        DOWNLOAD_BUTTON,
+        COPY_IMAGE,
+        COPY_TEXT,
+        COPIED_NOTICE,
+        REMOVE_ATTACHMENT_TOOLTIP,
+        ATTACHMENT_COUNT,
+        TRANSFERRING_SEND,
+        TRANSFERRING_RECV,
+        TRANSFER_FAILED,
+        FILE_SAVED,
+        FILE_SAVE_ERROR,
+        FILE_READ_ERROR,
+        ENCRYPTED_FILE,
+        NOTIFICATION_IMAGE,
+        NOTIFICATION_FILE,
+        IMAGE_PREVIEW_TITLE,
+        OPEN_PREVIEW_TOOLTIP
     }
 
     private static volatile Language language = Language.GERMAN;
@@ -194,6 +215,27 @@ public final class I18n {
         de.put(Key.TRAY_RENAME, "Name ändern...");
         de.put(Key.TRAY_EXIT, "Beenden");
         de.put(Key.HOTKEY_TRAY_ONLY, "Tray-Klick (nur Windows)");
+        de.put(Key.ATTACH_FILE_TOOLTIP, "Datei oder Screenshot auswählen");
+        de.put(Key.SELECT_FILE_TITLE, "Dateien oder Screenshots auswählen");
+        de.put(Key.SAVE_FILE_TITLE, "Datei speichern unter");
+        de.put(Key.DOWNLOAD_TOOLTIP, "Herunterladen / Speichern");
+        de.put(Key.DOWNLOAD_BUTTON, "Speichern");
+        de.put(Key.COPY_IMAGE, "Bild kopieren (Strg+C)");
+        de.put(Key.COPY_TEXT, "Kopieren (Strg+C)");
+        de.put(Key.COPIED_NOTICE, "In Zwischenablage kopiert");
+        de.put(Key.REMOVE_ATTACHMENT_TOOLTIP, "Anhang entfernen");
+        de.put(Key.ATTACHMENT_COUNT, "+{0} weitere");
+        de.put(Key.TRANSFERRING_SEND, "Wird gesendet… {0}%");
+        de.put(Key.TRANSFERRING_RECV, "Wird empfangen… {0}%");
+        de.put(Key.TRANSFER_FAILED, "Übertragung fehlgeschlagen");
+        de.put(Key.FILE_SAVED, "Gespeichert: {0}");
+        de.put(Key.FILE_SAVE_ERROR, "Datei konnte nicht gespeichert werden:\n{0}");
+        de.put(Key.FILE_READ_ERROR, "Datei konnte nicht gelesen werden:\n{0}");
+        de.put(Key.ENCRYPTED_FILE, "Verschlüsselte Datei");
+        de.put(Key.NOTIFICATION_IMAGE, "Screenshot: {0}");
+        de.put(Key.NOTIFICATION_FILE, "Datei: {0} ({1})");
+        de.put(Key.IMAGE_PREVIEW_TITLE, "Bildvorschau – {0}");
+        de.put(Key.OPEN_PREVIEW_TOOLTIP, "Klicken zum Vergrößern");
         TEXTS.put(Language.GERMAN, Map.copyOf(de));
 
         Map<Key, String> en = new HashMap<>();
@@ -276,6 +318,27 @@ public final class I18n {
         en.put(Key.TRAY_RENAME, "Change name...");
         en.put(Key.TRAY_EXIT, "Quit");
         en.put(Key.HOTKEY_TRAY_ONLY, "Tray click (Windows only)");
+        en.put(Key.ATTACH_FILE_TOOLTIP, "Select file or screenshot");
+        en.put(Key.SELECT_FILE_TITLE, "Select files or screenshots");
+        en.put(Key.SAVE_FILE_TITLE, "Save file as");
+        en.put(Key.DOWNLOAD_TOOLTIP, "Download / Save");
+        en.put(Key.DOWNLOAD_BUTTON, "Save");
+        en.put(Key.COPY_IMAGE, "Copy image (Ctrl+C)");
+        en.put(Key.COPY_TEXT, "Copy (Ctrl+C)");
+        en.put(Key.COPIED_NOTICE, "Copied to clipboard");
+        en.put(Key.REMOVE_ATTACHMENT_TOOLTIP, "Remove attachment");
+        en.put(Key.ATTACHMENT_COUNT, "+{0} more");
+        en.put(Key.TRANSFERRING_SEND, "Sending… {0}%");
+        en.put(Key.TRANSFERRING_RECV, "Receiving… {0}%");
+        en.put(Key.TRANSFER_FAILED, "Transfer failed");
+        en.put(Key.FILE_SAVED, "Saved: {0}");
+        en.put(Key.FILE_SAVE_ERROR, "Could not save file:\n{0}");
+        en.put(Key.FILE_READ_ERROR, "Could not read file:\n{0}");
+        en.put(Key.ENCRYPTED_FILE, "Encrypted file");
+        en.put(Key.NOTIFICATION_IMAGE, "Screenshot: {0}");
+        en.put(Key.NOTIFICATION_FILE, "File: {0} ({1})");
+        en.put(Key.IMAGE_PREVIEW_TITLE, "Image preview – {0}");
+        en.put(Key.OPEN_PREVIEW_TOOLTIP, "Click to enlarge");
         TEXTS.put(Language.ENGLISH, Map.copyOf(en));
     }
 
