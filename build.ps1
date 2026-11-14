@@ -20,6 +20,73 @@ function Test-Jdk([string]$Path) {
     return $Path -and (Test-Path (Join-Path $Path "bin\jpackage.exe"))
 }
 
+function Find-Jdk([string]$Path) {
+    if (Test-Jdk $Path) { return $Path }
+    if (Test-Path -LiteralPath $Path) {
+        $child = Get-ChildItem -LiteralPath $Path -Directory -ErrorAction SilentlyContinue |
+            Where-Object { Test-Jdk $_.FullName } |
+            Select-Object -First 1
+        if ($child) { return $child.FullName }
+    }
+    return $null
+}
+
+function Install-PortableJdk {
+    $cacheBase = if ($env:LOCALAPPDATA) {
+        Join-Path $env:LOCALAPPDATA "AeroBuild"
+    } else {
+        Join-Path $env:TEMP "AeroBuild"
+    }
+    $installRoot = Join-Path $cacheBase "jdk-21"
+
+    $cached = Find-Jdk $installRoot
+    if ($cached) { return $cached }
+
+    $arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "aarch64" } else { "x64" }
+    $url = "https://api.adoptium.net/v3/binary/latest/21/ga/windows/$arch/jdk/hotspot/normal/eclipse?project=jdk"
+    $zip = Join-Path ([System.IO.Path]::GetTempPath()) "aero-jdk21-$arch.zip"
+
+    Write-Host "No JDK found. Downloading Temurin JDK 21 (Windows $arch)..." -ForegroundColor Yellow
+    Write-Host "This is a one-time download of about 190 MB." -ForegroundColor Yellow
+
+    $oldProgress = $ProgressPreference
+    try {
+        $ProgressPreference = "SilentlyContinue"
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+    } catch {
+        throw "Could not download a JDK automatically. Install Java 17+ from https://adoptium.net and run build.ps1 again.`n$($_.Exception.Message)"
+    } finally {
+        $ProgressPreference = $oldProgress
+    }
+
+    if (-not (Test-Path -LiteralPath $zip) -or (Get-Item -LiteralPath $zip).Length -lt 50MB) {
+        Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
+        throw "The downloaded JDK file looks invalid. Install Java 17+ from https://adoptium.net and run build.ps1 again."
+    }
+
+    Write-Host "Extracting JDK..." -ForegroundColor Cyan
+    if (Test-Path -LiteralPath $installRoot) {
+        Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
+
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $installRoot)
+    } catch {
+        throw "Could not extract the downloaded JDK. Install Java 17+ from https://adoptium.net and run build.ps1 again.`n$($_.Exception.Message)"
+    } finally {
+        Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
+    }
+
+    $installed = Find-Jdk $installRoot
+    if (-not $installed) {
+        throw "The downloaded JDK could not be found after extraction. Install Java 17+ from https://adoptium.net and run build.ps1 again."
+    }
+    return $installed
+}
+
 $jdk = $null
 
 # 1. JAVA_HOME, if set and complete
@@ -64,7 +131,7 @@ if (-not $jdk) {
 }
 
 if (-not $jdk) {
-    throw "Found no JDK with jpackage. Install a JDK 17+ or set JAVA_HOME to the JDK folder."
+    $jdk = Install-PortableJdk
 }
 Write-Host "Using JDK: $jdk" -ForegroundColor Cyan
 
@@ -94,6 +161,49 @@ function Remove-BuildFolder([string]$Path) {
                 throw "Could not remove '$Path'. Close Aero and any program using this folder, then try again."
             }
             Start-Sleep -Milliseconds 400
+        }
+    }
+}
+
+function New-PortableZip([string]$SourceDir, [string]$Destination) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        try {
+            if (Test-Path -LiteralPath $Destination) {
+                Remove-Item -LiteralPath $Destination -Force -ErrorAction Stop
+            }
+
+            [System.IO.Compression.ZipFile]::CreateFromDirectory(
+                $SourceDir,
+                $Destination,
+                [System.IO.Compression.CompressionLevel]::Optimal,
+                $true
+            )
+
+            # A recently built EXE can be locked by antivirus while zipping.
+            # Verify the archive instead of silently shipping a partial ZIP.
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($Destination)
+            try {
+                $exe = $zip.Entries | Where-Object {
+                    $_.FullName -eq "Aero\Aero.exe" -or $_.FullName -eq "Aero/Aero.exe"
+                }
+                $jar = $zip.Entries | Where-Object {
+                    $_.FullName -eq "Aero\app\aero.jar" -or $_.FullName -eq "Aero/app/aero.jar"
+                }
+                if (-not $exe -or $exe.Length -le 0 -or -not $jar -or $jar.Length -le 0) {
+                    throw "The ZIP is incomplete."
+                }
+            } finally {
+                $zip.Dispose()
+            }
+            return
+        } catch {
+            if ($attempt -eq 5) {
+                throw "Could not create the portable ZIP after 5 attempts: $($_.Exception.Message)"
+            }
+            Write-Host "ZIP is temporarily locked (probably by antivirus). Retrying in 2 seconds..." -ForegroundColor Yellow
+            Start-Sleep -Seconds 2
         }
     }
 }
@@ -140,13 +250,7 @@ if (-not (Test-Path -LiteralPath $exePath)) {
 }
 
 # --- Portable ZIP -----------------------------------------------------------
-if (Test-Path -LiteralPath $zipPath) {
-    Remove-Item -LiteralPath $zipPath -Force
-}
-Compress-Archive -LiteralPath $appDir -DestinationPath $zipPath -CompressionLevel Optimal
-if (-not (Test-Path -LiteralPath $zipPath)) {
-    throw "Portable ZIP was not created."
-}
+New-PortableZip $appDir $zipPath
 
 $zipSizeMb = [math]::Round((Get-Item -LiteralPath $zipPath).Length / 1MB, 1)
 Write-Host "`nDone:" -ForegroundColor Green
