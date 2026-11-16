@@ -35,6 +35,8 @@ public final class AppSettings {
     private boolean keepMessages = false;
     private I18n.Language language = I18n.Language.GERMAN;
     private String peerId;
+    private int windowWidth = 0;
+    private int windowHeight = 0;
     private final Map<String, ChatGroup> groups = new LinkedHashMap<>();
     private final Set<String> deletedGroups = new LinkedHashSet<>();
 
@@ -72,6 +74,8 @@ public final class AppSettings {
         settings.keepMessages =
                 "true".equalsIgnoreCase(properties.getProperty("keepMessages", "false"));
         settings.language = I18n.fromCode(properties.getProperty("language", "de"));
+        settings.windowWidth = parsePositiveInt(properties.getProperty("windowWidth"));
+        settings.windowHeight = parsePositiveInt(properties.getProperty("windowHeight"));
 
         settings.peerId = trimToNull(properties.getProperty("peerId"));
         if (settings.peerId == null) {
@@ -160,6 +164,22 @@ public final class AppSettings {
         return peerId;
     }
 
+    public synchronized int getWindowWidth() {
+        return windowWidth;
+    }
+
+    public synchronized int getWindowHeight() {
+        return windowHeight;
+    }
+
+    public synchronized void setWindowSize(int width, int height) {
+        if (width <= 0 || height <= 0) return;
+        if (this.windowWidth == width && this.windowHeight == height) return;
+        this.windowWidth = width;
+        this.windowHeight = height;
+        save();
+    }
+
     public synchronized List<ChatGroup> getGroups() {
         return new ArrayList<>(groups.values());
     }
@@ -202,6 +222,10 @@ public final class AppSettings {
         properties.setProperty("keepMessages", Boolean.toString(keepMessages));
         properties.setProperty("language", language.getCode());
         properties.setProperty("peerId", peerId);
+        if (windowWidth > 0 && windowHeight > 0) {
+            properties.setProperty("windowWidth", Integer.toString(windowWidth));
+            properties.setProperty("windowHeight", Integer.toString(windowHeight));
+        }
         if (!deletedGroups.isEmpty()) {
             properties.setProperty("deletedGroups", String.join(",", deletedGroups));
         }
@@ -279,5 +303,17 @@ public final class AppSettings {
         if (value == null) return null;
         String trimmed = value.trim();
         return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private static int parsePositiveInt(String value) {
+        if (value == null || value.isBlank()) {
+            return 0;
+        }
+        try {
+            int parsed = Integer.parseInt(value.trim());
+            return parsed > 0 ? parsed : 0;
+        } catch (NumberFormatException e) {
+            return 0;
+        }
     }
 }

@@ -138,7 +138,17 @@ public final class I18n {
         SAVING_PROGRESS,
         DROP_FILES_HINT,
         READY_TO_DOWNLOAD,
-        FILE_UNAVAILABLE_ERROR
+        FILE_UNAVAILABLE_ERROR,
+        EDIT_MESSAGE,
+        DELETE_MESSAGE,
+        EDIT_MESSAGE_TITLE,
+        EDIT_MESSAGE_HINT,
+        DELETE_MESSAGE_TITLE,
+        DELETE_MESSAGE_CONFIRM,
+        DELETE_MESSAGE_CONFIRM_LOCAL,
+        EDITED_LABEL,
+        NOT_DELIVERED_LABEL,
+        MESSAGE_OPTIONS_TOOLTIP
     }
 
     private static volatile Language language = Language.GERMAN;
@@ -257,6 +267,16 @@ public final class I18n {
         de.put(Key.READY_TO_DOWNLOAD, "Bereit zum Download");
         de.put(Key.FILE_UNAVAILABLE_ERROR,
                 "Die Datei konnte nicht heruntergeladen werden.\nMöglicherweise ist der Absender offline oder hat den Upload beendet.");
+        de.put(Key.EDIT_MESSAGE, "Bearbeiten");
+        de.put(Key.DELETE_MESSAGE, "Löschen");
+        de.put(Key.EDIT_MESSAGE_TITLE, "Nachricht bearbeiten");
+        de.put(Key.EDIT_MESSAGE_HINT, "Enter zum Speichern · Shift+Enter für neue Zeile");
+        de.put(Key.DELETE_MESSAGE_TITLE, "Nachricht löschen");
+        de.put(Key.DELETE_MESSAGE_CONFIRM, "Diese Nachricht wirklich löschen?");
+        de.put(Key.DELETE_MESSAGE_CONFIRM_LOCAL, "Diese Nachricht aus deinem Verlauf löschen?");
+        de.put(Key.EDITED_LABEL, "bearbeitet");
+        de.put(Key.NOT_DELIVERED_LABEL, "nicht zugestellt");
+        de.put(Key.MESSAGE_OPTIONS_TOOLTIP, "Nachrichtenoptionen");
         TEXTS.put(Language.GERMAN, Map.copyOf(de));
 
         Map<Key, String> en = new HashMap<>();
@@ -371,6 +391,16 @@ public final class I18n {
         en.put(Key.READY_TO_DOWNLOAD, "Ready to download");
         en.put(Key.FILE_UNAVAILABLE_ERROR,
                 "Could not download the file.\nThe sender may be offline or the file is no longer available.");
+        en.put(Key.EDIT_MESSAGE, "Edit");
+        en.put(Key.DELETE_MESSAGE, "Delete");
+        en.put(Key.EDIT_MESSAGE_TITLE, "Edit message");
+        en.put(Key.EDIT_MESSAGE_HINT, "Enter to save · Shift+Enter for new line");
+        en.put(Key.DELETE_MESSAGE_TITLE, "Delete message");
+        en.put(Key.DELETE_MESSAGE_CONFIRM, "Really delete this message?");
+        en.put(Key.DELETE_MESSAGE_CONFIRM_LOCAL, "Delete this message from your chat history?");
+        en.put(Key.EDITED_LABEL, "edited");
+        en.put(Key.NOT_DELIVERED_LABEL, "not delivered");
+        en.put(Key.MESSAGE_OPTIONS_TOOLTIP, "Message options");
         TEXTS.put(Language.ENGLISH, Map.copyOf(en));
     }
 

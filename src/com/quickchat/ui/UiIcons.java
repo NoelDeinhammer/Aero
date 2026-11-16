@@ -130,6 +130,21 @@ public final class UiIcons {
         });
     }
 
+    public static Icon moreDots(Color color, int size) {
+        return new VectorIcon(size, size, color, (g, w, h) -> {
+            float cy = h / 2f;
+            float r = Math.max(1.1f, w * 0.085f);
+            float d = r * 2f;
+            float spacing = w * 0.27f;
+            float cx = w / 2f;
+            for (int i = -1; i <= 1; i++) {
+                float x = cx + i * spacing - r;
+                float y = cy - r;
+                g.fillOval(Math.round(x), Math.round(y), Math.round(d), Math.round(d));
+            }
+        });
+    }
+
     /**
      * Creates a dark rounded Swing button that bypasses light native Windows L&F chrome.
      */

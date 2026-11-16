@@ -95,15 +95,23 @@ public final class ChatHistoryStore {
                 if (text == null && attachment == null) {
                     continue;
                 }
+                boolean edited = "true".equalsIgnoreCase(
+                        properties.getProperty(base + "edited", "false"));
+                boolean notDelivered = "true".equalsIgnoreCase(
+                        properties.getProperty(base + "notDelivered", "false"));
                 messages.add(ChatMessage.restored(
+                        properties.getProperty(base + "id"),
                         id,
+                        properties.getProperty(base + "senderId", ""),
                         properties.getProperty(base + "sender", ""),
                         ChatMessage.truncate(text == null ? "" : text),
                         incoming,
                         properties.getProperty(base + "time", ""),
                         properties.getProperty(base + "iv", ""),
                         properties.getProperty(base + "cipher", ""),
-                        attachment
+                        attachment,
+                        edited,
+                        notDelivered
                 ));
             }
 
@@ -146,11 +154,19 @@ public final class ChatHistoryStore {
             for (int index = 0; index < count; index++) {
                 ChatMessage message = messages.get(first + index);
                 String base = messageKey(type, id, index);
+                properties.setProperty(base + "id", safe(message.getId()));
+                setIfNotEmpty(properties, base + "senderId", message.getSenderId());
                 properties.setProperty(base + "sender", safe(message.getSenderName()));
                 properties.setProperty(base + "text",
                         ChatMessage.truncate(safe(message.getText())));
                 properties.setProperty(base + "incoming", Boolean.toString(message.isIncoming()));
                 properties.setProperty(base + "time", safe(message.getFormattedTime()));
+                if (message.isEdited()) {
+                    properties.setProperty(base + "edited", "true");
+                }
+                if (message.isNotDelivered()) {
+                    properties.setProperty(base + "notDelivered", "true");
+                }
                 if (message.isEncrypted()) {
                     properties.setProperty(base + "iv", message.getIv());
                     properties.setProperty(base + "cipher", message.getCipherText());

@@ -4,6 +4,7 @@ import com.quickchat.i18n.I18n;
 
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
+import java.util.UUID;
 
 /**
  * Represents a single chat message exchanged with a peer.
@@ -17,46 +18,85 @@ public class ChatMessage {
      */
     public static final int MAX_TEXT_LENGTH = 2000;
 
+    private final String id;
     private final String peerId;
+    private final String senderId;
     private final String senderName;
     private String text;
     private final boolean incoming;
     private final String formattedTime;
-    private final String iv;
-    private final String cipherText;
+    private String iv;
+    private String cipherText;
     private final FileAttachment attachment;
+    private boolean edited;
+    private boolean notDelivered;
 
     public ChatMessage(String peerId, String senderName, String text, boolean incoming) {
-        this(peerId, senderName, text, incoming, null, null, null);
+        this(null, peerId, null, senderName, text, incoming, null, null, null, false, false);
     }
 
     public ChatMessage(String peerId, String senderName, String text, boolean incoming,
                        String iv, String cipherText) {
-        this(peerId, senderName, text, incoming, iv, cipherText, null);
+        this(null, peerId, null, senderName, text, incoming, iv, cipherText, null, false, false);
     }
 
     public ChatMessage(String peerId, String senderName, String text, boolean incoming,
                        FileAttachment attachment) {
-        this(peerId, senderName, text, incoming, null, null, attachment);
+        this(null, peerId, null, senderName, text, incoming, null, null, attachment, false, false);
     }
 
     public ChatMessage(String peerId, String senderName, String text, boolean incoming,
                        String iv, String cipherText, FileAttachment attachment) {
-        this(peerId, senderName, text, incoming,
-                LocalTime.now().format(TIME_FORMAT), iv, cipherText, attachment);
+        this(null, peerId, null, senderName, text, incoming, iv, cipherText, attachment, false, false);
     }
 
-    private ChatMessage(String peerId, String senderName, String text, boolean incoming,
-                        String formattedTime, String iv, String cipherText,
-                        FileAttachment attachment) {
-        this.peerId = peerId;
-        this.senderName = senderName;
+    private ChatMessage(String id, String peerId, String senderId, String senderName, String text,
+                        boolean incoming, String iv, String cipherText, FileAttachment attachment,
+                        boolean edited, boolean notDelivered) {
+        this(id, peerId, senderId, senderName, text, incoming,
+                LocalTime.now().format(TIME_FORMAT), iv, cipherText, attachment, edited, notDelivered);
+    }
+
+    private ChatMessage(String id, String peerId, String senderId, String senderName, String text,
+                        boolean incoming, String formattedTime, String iv, String cipherText,
+                        FileAttachment attachment, boolean edited, boolean notDelivered) {
+        this.id = normalizeId(id, attachment);
+        this.peerId = peerId == null ? "" : peerId;
+        this.senderId = senderId == null ? "" : senderId;
+        this.senderName = senderName == null ? "" : senderName;
         this.text = text == null ? "" : text;
         this.incoming = incoming;
         this.formattedTime = formattedTime;
-        this.iv = iv;
-        this.cipherText = cipherText;
+        this.iv = iv == null || iv.isEmpty() ? null : iv;
+        this.cipherText = cipherText == null || cipherText.isEmpty() ? null : cipherText;
         this.attachment = attachment;
+        this.edited = edited;
+        this.notDelivered = notDelivered;
+    }
+
+    public static ChatMessage outgoing(String peerId, String senderId, String senderName,
+                                       String text, boolean notDelivered) {
+        return new ChatMessage(null, peerId, senderId, senderName, text, false,
+                null, null, null, false, notDelivered);
+    }
+
+    public static ChatMessage outgoing(String peerId, String senderId, String senderName,
+                                       String text, FileAttachment attachment) {
+        return new ChatMessage(null, peerId, senderId, senderName, text, false,
+                null, null, attachment, false, false);
+    }
+
+    public static ChatMessage incoming(String id, String peerId, String senderId,
+                                       String senderName, String text) {
+        return new ChatMessage(id, peerId, senderId, senderName, text, true,
+                null, null, null, false, false);
+    }
+
+    public static ChatMessage incomingWithAttachment(String id, String peerId, String senderId,
+                                                     String senderName, String caption,
+                                                     FileAttachment attachment) {
+        return new ChatMessage(id, peerId, senderId, senderName, caption, true,
+                null, null, attachment, false, false);
     }
 
     /**
@@ -67,8 +107,8 @@ public class ChatMessage {
     public static ChatMessage restored(String peerId, String senderName, String text,
                                        boolean incoming, String formattedTime,
                                        String iv, String cipherText) {
-        return restored(peerId, senderName, text, incoming, formattedTime,
-                iv, cipherText, null);
+        return restored(null, peerId, null, senderName, text, incoming, formattedTime,
+                iv, cipherText, null, false, false);
     }
 
     /**
@@ -79,19 +119,31 @@ public class ChatMessage {
                                        boolean incoming, String formattedTime,
                                        String iv, String cipherText,
                                        FileAttachment attachment) {
+        return restored(null, peerId, null, senderName, text, incoming, formattedTime,
+                iv, cipherText, attachment, false, false);
+    }
+
+    public static ChatMessage restored(String id, String peerId, String senderId, String senderName,
+                                       String text, boolean incoming, String formattedTime,
+                                       String iv, String cipherText, FileAttachment attachment,
+                                       boolean edited, boolean notDelivered) {
         String time = formattedTime != null
                 && formattedTime.matches("\\d{2}:\\d{2}")
                 ? formattedTime
                 : LocalTime.now().format(TIME_FORMAT);
         return new ChatMessage(
-                peerId == null ? "" : peerId,
-                senderName == null ? "" : senderName,
-                text == null ? "" : text,
+                id,
+                peerId,
+                senderId,
+                senderName,
+                text,
                 incoming,
                 time,
-                iv == null || iv.isEmpty() ? null : iv,
-                cipherText == null || cipherText.isEmpty() ? null : cipherText,
-                attachment);
+                iv,
+                cipherText,
+                attachment,
+                edited,
+                notDelivered);
     }
 
     /**
@@ -100,8 +152,13 @@ public class ChatMessage {
      */
     public static ChatMessage encryptedIncoming(String peerId, String senderName,
                                                 String iv, String cipherText) {
-        return new ChatMessage(peerId, senderName,
-                I18n.t(I18n.Key.ENCRYPTED_MESSAGE), true, iv, cipherText, null);
+        return encryptedIncoming(null, peerId, null, senderName, iv, cipherText);
+    }
+
+    public static ChatMessage encryptedIncoming(String id, String peerId, String senderId,
+                                                String senderName, String iv, String cipherText) {
+        return new ChatMessage(id, peerId, senderId, senderName,
+                I18n.t(I18n.Key.ENCRYPTED_MESSAGE), true, iv, cipherText, null, false, false);
     }
 
     /**
@@ -109,8 +166,13 @@ public class ChatMessage {
      */
     public static ChatMessage encryptedFileIncoming(String peerId, String senderName,
                                                     FileAttachment attachment) {
-        return new ChatMessage(peerId, senderName,
-                I18n.t(I18n.Key.ENCRYPTED_FILE), true, null, null, attachment);
+        return encryptedFileIncoming(null, peerId, null, senderName, attachment);
+    }
+
+    public static ChatMessage encryptedFileIncoming(String id, String peerId, String senderId,
+                                                    String senderName, FileAttachment attachment) {
+        return new ChatMessage(id, peerId, senderId, senderName,
+                I18n.t(I18n.Key.ENCRYPTED_FILE), true, null, null, attachment, false, false);
     }
 
     /**
@@ -133,8 +195,27 @@ public class ChatMessage {
         return text.substring(0, end) + "\u2026";
     }
 
+    private static String normalizeId(String id, FileAttachment attachment) {
+        if (id != null && id.matches("[A-Za-z0-9_-]{1,64}")) {
+            return id;
+        }
+        if (attachment != null && attachment.getTransferId() != null
+                && attachment.getTransferId().matches("[A-Za-z0-9_-]{1,64}")) {
+            return attachment.getTransferId();
+        }
+        return UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+    }
+
+    public String getId() {
+        return id;
+    }
+
     public String getPeerId() {
         return peerId;
+    }
+
+    public String getSenderId() {
+        return senderId;
     }
 
     public String getSenderName() {
@@ -146,7 +227,40 @@ public class ChatMessage {
     }
 
     public synchronized void setDecryptedText(String text) {
-        this.text = text;
+        this.text = text == null ? "" : text;
+    }
+
+    public synchronized void editText(String newText) {
+        this.text = truncate(newText);
+        this.edited = true;
+    }
+
+    public synchronized void updateEncryptedPayload(String iv, String cipherText,
+                                                    String decryptedText, boolean markEdited) {
+        this.iv = (iv == null || iv.isEmpty()) ? null : iv;
+        this.cipherText = (cipherText == null || cipherText.isEmpty()) ? null : cipherText;
+        if (decryptedText != null) {
+            this.text = truncate(decryptedText);
+        }
+        if (markEdited) {
+            this.edited = true;
+        }
+    }
+
+    public synchronized boolean isEdited() {
+        return edited;
+    }
+
+    public synchronized void setEdited(boolean edited) {
+        this.edited = edited;
+    }
+
+    public synchronized boolean isNotDelivered() {
+        return notDelivered;
+    }
+
+    public synchronized void setNotDelivered(boolean notDelivered) {
+        this.notDelivered = notDelivered;
     }
 
     public boolean isIncoming() {
@@ -157,16 +271,16 @@ public class ChatMessage {
         return formattedTime;
     }
 
-    public boolean isEncrypted() {
+    public synchronized boolean isEncrypted() {
         return cipherText != null && !cipherText.isEmpty()
                 && iv != null && !iv.isEmpty();
     }
 
-    public String getIv() {
+    public synchronized String getIv() {
         return iv;
     }
 
-    public String getCipherText() {
+    public synchronized String getCipherText() {
         return cipherText;
     }
 

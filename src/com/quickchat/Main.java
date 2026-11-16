@@ -179,6 +179,48 @@ public class Main {
                     });
                     return true;
                 }
+
+                @Override
+                public void onMessageEdited(Peer sender, String messageId, String newText) {
+                    SwingUtilities.invokeLater(() -> {
+                        ChatPopupWindow win = windowRef.get();
+                        if (win != null) {
+                            win.handleRemoteMessageEdited(sender, messageId, newText);
+                        }
+                    });
+                }
+
+                @Override
+                public void onMessageDeleted(Peer sender, String messageId) {
+                    SwingUtilities.invokeLater(() -> {
+                        ChatPopupWindow win = windowRef.get();
+                        if (win != null) {
+                            win.handleRemoteMessageDeleted(sender, messageId);
+                        }
+                    });
+                }
+
+                @Override
+                public void onGroupMessageEdited(Peer sender, String groupId, String messageId,
+                                                 String salt, String check, String iv, String payload) {
+                    SwingUtilities.invokeLater(() -> {
+                        ChatPopupWindow win = windowRef.get();
+                        if (win != null) {
+                            win.handleRemoteGroupMessageEdited(
+                                    sender, groupId, messageId, salt, check, iv, payload);
+                        }
+                    });
+                }
+
+                @Override
+                public void onGroupMessageDeleted(Peer sender, String groupId, String messageId) {
+                    SwingUtilities.invokeLater(() -> {
+                        ChatPopupWindow win = windowRef.get();
+                        if (win != null) {
+                            win.handleRemoteGroupMessageDeleted(sender, groupId, messageId);
+                        }
+                    });
+                }
             });
 
             Path sessionTransferDir = createSessionTransferDir();

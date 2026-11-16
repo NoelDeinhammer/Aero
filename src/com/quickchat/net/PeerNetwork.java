@@ -88,6 +88,19 @@ public class PeerNetwork {
         default boolean onGroupFileOffered(Peer sender, ChatGroup group, ChatMessage message) {
             return true;
         }
+
+        default void onMessageEdited(Peer sender, String messageId, String newText) {
+        }
+
+        default void onMessageDeleted(Peer sender, String messageId) {
+        }
+
+        default void onGroupMessageEdited(Peer sender, String groupId, String messageId,
+                                          String salt, String check, String iv, String payload) {
+        }
+
+        default void onGroupMessageDeleted(Peer sender, String groupId, String messageId) {
+        }
     }
 
     private static final class OutgoingOffer {
@@ -267,16 +280,50 @@ public class PeerNetwork {
     }
 
     public boolean sendMessage(Peer peer, String text) {
+        return sendMessage(peer, null, text);
+    }
+
+    public boolean sendMessage(Peer peer, String messageId, String text) {
         if (peer == null || text == null || text.isEmpty()
                 || text.length() > ChatMessage.MAX_TEXT_LENGTH) {
             return false;
         }
+        String safeId = normalizeMessageId(messageId);
         String payload = String.join("|",
                 "MSG",
                 myId,
                 encode(myName),
                 String.valueOf(myPort),
-                encode(text));
+                encode(text),
+                safeId);
+        return sendRaw(peer, payload);
+    }
+
+    public boolean sendMessageEdit(Peer peer, String messageId, String newText) {
+        if (peer == null || newText == null || newText.length() > ChatMessage.MAX_TEXT_LENGTH
+                || messageId == null || !messageId.matches(ID_PATTERN)) {
+            return false;
+        }
+        String payload = String.join("|",
+                "MEDIT",
+                myId,
+                encode(myName),
+                String.valueOf(myPort),
+                messageId,
+                encode(newText));
+        return sendRaw(peer, payload);
+    }
+
+    public boolean sendMessageDelete(Peer peer, String messageId) {
+        if (peer == null || messageId == null || !messageId.matches(ID_PATTERN)) {
+            return false;
+        }
+        String payload = String.join("|",
+                "MDEL",
+                myId,
+                encode(myName),
+                String.valueOf(myPort),
+                messageId);
         return sendRaw(peer, payload);
     }
 
@@ -285,6 +332,10 @@ public class PeerNetwork {
      * Returns the number of members the message was delivered to.
      */
     public int sendGroupMessage(ChatGroup group, String text) {
+        return sendGroupMessage(group, null, text);
+    }
+
+    public int sendGroupMessage(ChatGroup group, String messageId, String text) {
         if (group == null || text == null || text.isEmpty()
                 || text.length() > ChatMessage.MAX_TEXT_LENGTH) {
             return 0;
@@ -308,6 +359,7 @@ public class PeerNetwork {
             payload = encode(text);
         }
 
+        String safeId = normalizeMessageId(messageId);
         String members = serializeGroupMembers(group);
         String packet = String.join("|",
                 "GMSG",
@@ -320,8 +372,67 @@ public class PeerNetwork {
                 group.getPasswordSalt(),
                 group.getPasswordCheck(),
                 iv,
+                payload,
+                safeId);
+
+        return deliverToGroup(group, packet);
+    }
+
+    public int sendGroupMessageEdit(ChatGroup group, String messageId, String newText) {
+        if (group == null || newText == null || newText.length() > ChatMessage.MAX_TEXT_LENGTH
+                || messageId == null || !messageId.matches(ID_PATTERN)) {
+            return 0;
+        }
+
+        String iv = "";
+        String payload;
+        if (group.isPasswordProtected()) {
+            byte[] key = group.getPasswordKeyBytes();
+            if (key == null) {
+                return 0;
+            }
+            try {
+                GroupCrypto.Encrypted encrypted = GroupCrypto.encrypt(key, newText);
+                iv = encrypted.getIv();
+                payload = encrypted.getCipherText();
+            } catch (GeneralSecurityException e) {
+                return 0;
+            }
+        } else {
+            payload = encode(newText);
+        }
+
+        String packet = String.join("|",
+                "GMEDIT",
+                myId,
+                encode(myName),
+                String.valueOf(myPort),
+                group.getId(),
+                messageId,
+                group.getPasswordSalt(),
+                group.getPasswordCheck(),
+                iv,
                 payload);
 
+        return deliverToGroup(group, packet);
+    }
+
+    public int sendGroupMessageDelete(ChatGroup group, String messageId) {
+        if (group == null || messageId == null || !messageId.matches(ID_PATTERN)) {
+            return 0;
+        }
+        String packet = String.join("|",
+                "GMDEL",
+                myId,
+                encode(myName),
+                String.valueOf(myPort),
+                group.getId(),
+                messageId);
+
+        return deliverToGroup(group, packet);
+    }
+
+    private int deliverToGroup(ChatGroup group, String packet) {
         int delivered = 0;
         for (String memberId : group.getMemberIds()) {
             if (myId.equals(memberId)) continue;
@@ -333,6 +444,26 @@ public class PeerNetwork {
         return delivered;
     }
 
+    public void revokeFileOffer(String transferId) {
+        if (transferId == null || transferId.isEmpty()) {
+            return;
+        }
+        OutgoingOffer offer = offeredFiles.remove(transferId);
+        if (offer != null) {
+            synchronized (offer) {
+                offer.revoked = true;
+                offer.senderAttachment.cancel();
+            }
+        }
+    }
+
+    private static String normalizeMessageId(String messageId) {
+        if (messageId != null && messageId.matches(ID_PATTERN)) {
+            return messageId;
+        }
+        return UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+    }
+
     /**
      * Tells all currently online members that the group was deleted.
      * Returns the number of members that received the notice.
@@ -341,16 +472,7 @@ public class PeerNetwork {
         if (group == null) {
             return 0;
         }
-        String payload = buildGroupDeletionPayload(group.getId());
-        int delivered = 0;
-        for (String memberId : group.getMemberIds()) {
-            if (myId.equals(memberId)) continue;
-            Peer peer = peers.get(memberId);
-            if (peer != null && sendRaw(peer, payload)) {
-                delivered++;
-            }
-        }
-        return delivered;
+        return deliverToGroup(group, buildGroupDeletionPayload(group.getId()));
     }
 
     /**
@@ -699,6 +821,10 @@ public class PeerNetwork {
         return list;
     }
 
+    public Peer getPeerById(String peerId) {
+        return peerId == null ? null : peers.get(peerId);
+    }
+
     private ServerSocket bindFirstAvailablePort() throws IOException {
         for (int port = PORT_START; port <= PORT_END; port++) {
             try {
@@ -743,10 +869,30 @@ public class PeerNetwork {
                 String senderName = decode(parts[2]);
                 int senderPort = Integer.parseInt(parts[3]);
                 String text = ChatMessage.truncate(decode(parts[4]));
+                String msgId = (parts.length >= 6 && parts[5].matches(ID_PATTERN)) ? parts[5] : null;
 
                 Peer sender = upsertPeer(senderId, senderName, remoteHost, senderPort);
-                ChatMessage msg = new ChatMessage(sender.getId(), sender.getName(), text, true);
+                ChatMessage msg = ChatMessage.incoming(msgId, sender.getId(), sender.getId(), sender.getName(), text);
                 listener.onMessageReceived(sender, msg);
+            } else if ("MEDIT".equals(parts[0]) && parts.length >= 6) {
+                String senderId = parts[1];
+                String senderName = decode(parts[2]);
+                int senderPort = Integer.parseInt(parts[3]);
+                String messageId = parts[4];
+                if (!messageId.matches(ID_PATTERN)) return;
+                String newText = ChatMessage.truncate(decode(parts[5]));
+
+                Peer sender = upsertPeer(senderId, senderName, remoteHost, senderPort);
+                listener.onMessageEdited(sender, messageId, newText);
+            } else if ("MDEL".equals(parts[0]) && parts.length >= 5) {
+                String senderId = parts[1];
+                String senderName = decode(parts[2]);
+                int senderPort = Integer.parseInt(parts[3]);
+                String messageId = parts[4];
+                if (!messageId.matches(ID_PATTERN)) return;
+
+                Peer sender = upsertPeer(senderId, senderName, remoteHost, senderPort);
+                listener.onMessageDeleted(sender, messageId);
             } else if ("GMSG".equals(parts[0]) && parts.length >= 11) {
                 String senderId = parts[1];
                 String senderName = decode(parts[2]);
@@ -760,6 +906,7 @@ public class PeerNetwork {
                 String check = parts[8];
                 String iv = parts[9];
                 String payload = parts[10];
+                String msgId = (parts.length >= 12 && parts[11].matches(ID_PATTERN)) ? parts[11] : null;
 
                 Peer sender = upsertPeer(senderId, senderName, remoteHost, senderPort);
                 ChatGroup group = new ChatGroup(groupId, groupName);
@@ -769,10 +916,10 @@ public class PeerNetwork {
 
                 ChatMessage msg;
                 if (!salt.isEmpty() && !check.isEmpty()) {
-                    msg = ChatMessage.encryptedIncoming(groupId, sender.getName(), iv, payload);
+                    msg = ChatMessage.encryptedIncoming(msgId, groupId, sender.getId(), sender.getName(), iv, payload);
                 } else {
-                    msg = new ChatMessage(groupId, sender.getName(),
-                            ChatMessage.truncate(decode(payload)), true);
+                    msg = ChatMessage.incoming(msgId, groupId, sender.getId(), sender.getName(),
+                            ChatMessage.truncate(decode(payload)));
                 }
                 listener.onGroupMessageReceived(sender, group, msg);
             } else if ("GMSG".equals(parts[0]) && parts.length >= 8) {
@@ -793,8 +940,32 @@ public class PeerNetwork {
                 parseGroupMembers(encodedMembers, group);
                 group.addMember(sender.getId(), sender.getName());
 
-                ChatMessage msg = new ChatMessage(groupId, sender.getName(), text, true);
+                ChatMessage msg = ChatMessage.incoming(null, groupId, sender.getId(), sender.getName(), text);
                 listener.onGroupMessageReceived(sender, group, msg);
+            } else if ("GMEDIT".equals(parts[0]) && parts.length >= 10) {
+                String senderId = parts[1];
+                String senderName = decode(parts[2]);
+                int senderPort = Integer.parseInt(parts[3]);
+                String groupId = parts[4];
+                String messageId = parts[5];
+                if (!groupId.matches(ID_PATTERN) || !messageId.matches(ID_PATTERN)) return;
+                String salt = parts[6];
+                String check = parts[7];
+                String iv = parts[8];
+                String payload = parts[9];
+
+                Peer sender = upsertPeer(senderId, senderName, remoteHost, senderPort);
+                listener.onGroupMessageEdited(sender, groupId, messageId, salt, check, iv, payload);
+            } else if ("GMDEL".equals(parts[0]) && parts.length >= 6) {
+                String senderId = parts[1];
+                String senderName = decode(parts[2]);
+                int senderPort = Integer.parseInt(parts[3]);
+                String groupId = parts[4];
+                String messageId = parts[5];
+                if (!groupId.matches(ID_PATTERN) || !messageId.matches(ID_PATTERN)) return;
+
+                Peer sender = upsertPeer(senderId, senderName, remoteHost, senderPort);
+                listener.onGroupMessageDeleted(sender, groupId, messageId);
             } else if ("GDEL".equals(parts[0]) && parts.length >= 5) {
                 String senderId = parts[1];
                 String senderName = decode(parts[2]);
@@ -832,7 +1003,8 @@ public class PeerNetwork {
         Peer sender = upsertPeer(senderId, senderName, remoteHost, senderPort);
         FileAttachment attachment = FileAttachment.incomingOffer(transferId, fileName, fileSize, isImage);
         attachment.setOfferSource(sender.getId(), remoteHost, senderPort, null, false);
-        ChatMessage msg = new ChatMessage(sender.getId(), sender.getName(), caption, true, attachment);
+        ChatMessage msg = ChatMessage.incomingWithAttachment(
+                transferId, sender.getId(), sender.getId(), sender.getName(), caption, attachment);
 
         rawOut.write("OK\n".getBytes(StandardCharsets.UTF_8));
         rawOut.flush();
@@ -871,14 +1043,16 @@ public class PeerNetwork {
             String metaCipher = parts[13];
             attachment = FileAttachment.encryptedIncomingOffer(transferId, fileSize, metaIv, metaCipher);
             attachment.setOfferSource(sender.getId(), remoteHost, senderPort, groupId, true);
-            msg = ChatMessage.encryptedFileIncoming(groupId, sender.getName(), attachment);
+            msg = ChatMessage.encryptedFileIncoming(
+                    transferId, groupId, sender.getId(), sender.getName(), attachment);
         } else {
             boolean isImage = "1".equals(parts[10]);
             String fileName = FileAttachment.sanitizeFileName(decode(parts[11]));
             String caption = ChatMessage.truncate(decode(parts[13]));
             attachment = FileAttachment.incomingOffer(transferId, fileName, fileSize, isImage);
             attachment.setOfferSource(sender.getId(), remoteHost, senderPort, groupId, false);
-            msg = new ChatMessage(groupId, sender.getName(), caption, true, attachment);
+            msg = ChatMessage.incomingWithAttachment(
+                    transferId, groupId, sender.getId(), sender.getName(), caption, attachment);
         }
 
         if (!listener.onGroupFileOffered(sender, group, msg)) {
@@ -1255,7 +1429,7 @@ public class PeerNetwork {
     }
 
     private static String encode(String raw) {
-        return Base64.getEncoder().encodeToString(raw.getBytes(StandardCharsets.UTF_8));
+        return Base64.getEncoder().encodeToString((raw == null ? "" : raw).getBytes(StandardCharsets.UTF_8));
     }
 
     private static String decode(String b64) {
