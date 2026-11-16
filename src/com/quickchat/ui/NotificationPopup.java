@@ -109,7 +109,12 @@ public class NotificationPopup extends JWindow {
 
         String text = preview == null ? "" : preview.replace("\n", " ").trim();
         if (text.length() > 44) {
-            text = text.substring(0, 41) + "...";
+            int end = 41;
+            if (Character.isHighSurrogate(text.charAt(end - 1))
+                    && Character.isLowSurrogate(text.charAt(end))) {
+                end--;
+            }
+            text = text.substring(0, end) + "...";
         }
         messageLabel.setText(text);
 

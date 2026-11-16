@@ -28,7 +28,6 @@ import java.awt.event.InputEvent;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
-import java.awt.geom.RoundRectangle2D;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -127,7 +126,7 @@ public class ImagePreviewDialog extends JDialog {
         actions.add(downloadBtn);
         actions.add(closeBtn);
 
-        header.add(title, BorderLayout.WEST);
+        header.add(title, BorderLayout.CENTER);
         header.add(actions, BorderLayout.EAST);
 
         MouseAdapter dragger = new MouseAdapter() {
@@ -185,8 +184,17 @@ public class ImagePreviewDialog extends JDialog {
         int w = Math.min(screen.width - 40, Math.max(360, getWidth()));
         int h = Math.min(screen.height - 40, Math.max(220, getHeight()));
         setSize(new Dimension(w, h));
-        setShape(new RoundRectangle2D.Double(0, 0, w, h, 14, 14));
+        WindowResizer.install(this, 14, 340, 220, 44, null);
         setLocationRelativeTo(owner);
         SwingUtilities.invokeLater(root::requestFocusInWindow);
+    }
+
+    @Override
+    public void setBounds(int x, int y, int width, int height) {
+        boolean sizeChanged = width != getWidth() || height != getHeight();
+        super.setBounds(x, y, width, height);
+        if (sizeChanged && isUndecorated() && width > 0 && height > 0) {
+            WindowResizer.updateRoundShape(this, 14);
+        }
     }
 }
