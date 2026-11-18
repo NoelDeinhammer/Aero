@@ -43,6 +43,7 @@ import javax.swing.Timer;
 import javax.swing.TransferHandler;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
+import javax.swing.plaf.basic.BasicButtonUI;
 import javax.swing.text.AbstractDocument;
 import javax.swing.text.AttributeSet;
 import javax.swing.text.BadLocationException;
@@ -184,6 +185,17 @@ public class ChatPopupWindow extends JDialog {
             9
     );
     private JButton sendButton;
+    private Icon sendIconNormal;
+    private Icon saveEditIcon;
+    private JPanel editBanner;
+    private JPanel editAccentBar;
+    private JLabel editTitleLabel;
+    private JLabel editPreviewLabel;
+    private JButton cancelEditButton;
+    private ChatMessage editingMessage;
+    private ChatGroup editingTargetGroup;
+    private Peer editingTargetPeer;
+    private String draftBeforeEdit;
     private final JPanel attachmentStrip = new JPanel();
     private final JLabel dropBanner = new JLabel("", SwingConstants.CENTER);
     private final List<PendingAttachment> pendingAttachments = new ArrayList<>();
@@ -294,11 +306,18 @@ public class ChatPopupWindow extends JDialog {
         attachmentStrip.setLayout(new BoxLayout(attachmentStrip, BoxLayout.Y_AXIS));
         attachmentStrip.setVisible(false);
 
+        editBanner = buildEditBanner();
         chatInputBar = buildInputBar();
+
+        JPanel southTop = new JPanel();
+        southTop.setLayout(new BoxLayout(southTop, BoxLayout.Y_AXIS));
+        southTop.setOpaque(false);
+        southTop.add(editBanner);
+        southTop.add(attachmentStrip);
 
         JPanel southPanel = new JPanel(new BorderLayout());
         southPanel.setOpaque(false);
-        southPanel.add(attachmentStrip, BorderLayout.NORTH);
+        southPanel.add(southTop, BorderLayout.NORTH);
         southPanel.add(chatInputBar, BorderLayout.SOUTH);
 
         chatViewPanel.add(dropBanner, BorderLayout.NORTH);
@@ -325,7 +344,13 @@ public class ChatPopupWindow extends JDialog {
         loadStoredHistory();
 
         root.registerKeyboardAction(
-                e -> setVisible(false),
+                e -> {
+                    if (editingMessage != null) {
+                        cancelEditingMessage(true);
+                    } else {
+                        setVisible(false);
+                    }
+                },
                 KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0),
                 JPanel.WHEN_IN_FOCUSED_WINDOW
         );
@@ -406,6 +431,7 @@ public class ChatPopupWindow extends JDialog {
     }
 
     public void openChatWith(Peer peer) {
+        cancelEditingMessage(false);
         this.activePeer = peer;
         this.activeGroup = null;
         this.currentCard = CARD_CHAT;
@@ -436,6 +462,7 @@ public class ChatPopupWindow extends JDialog {
                 && !promptForGroupPassword(local)) {
             return;
         }
+        cancelEditingMessage(false);
         this.activeGroup = local;
         this.activePeer = null;
         this.currentCard = CARD_CHAT;
@@ -460,6 +487,7 @@ public class ChatPopupWindow extends JDialog {
     }
 
     private void showPeerSelector(boolean makeVisible) {
+        cancelEditingMessage(false);
         this.activePeer = null;
         this.activeGroup = null;
         this.currentCard = CARD_PEERS;
@@ -477,6 +505,7 @@ public class ChatPopupWindow extends JDialog {
     }
 
     public void showSettings() {
+        cancelEditingMessage(false);
         this.activePeer = null;
         this.activeGroup = null;
         this.currentCard = CARD_SETTINGS;
@@ -1365,6 +1394,17 @@ public class ChatPopupWindow extends JDialog {
                 BorderFactory.createEmptyBorder(7, 10, 7, 10)
         ));
 
+        if (editBanner != null) {
+            editBanner.setBackground(Theme.BG_HEADER);
+            editBanner.setBorder(BorderFactory.createCompoundBorder(
+                    BorderFactory.createMatteBorder(1, 0, 0, 0, Theme.BORDER),
+                    BorderFactory.createEmptyBorder(6, 12, 6, 12)
+            ));
+            editAccentBar.setBackground(Theme.ACCENT);
+            editTitleLabel.setForeground(Theme.isLight(Theme.BG_WINDOW) ? Theme.ACCENT : Theme.ACCENT_HOVER);
+            editPreviewLabel.setForeground(Theme.TEXT_MUTED);
+        }
+
         attachmentStrip.setBackground(Theme.BG_HEADER);
         attachmentStrip.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createMatteBorder(1, 0, 0, 0, Theme.BORDER),
@@ -1407,6 +1447,7 @@ public class ChatPopupWindow extends JDialog {
 
         refreshThemeControlsState();
         updateMessageCounter();
+        refreshEditingHighlights();
 
         if (reRenderActiveLists) {
             inlineImageCache.clear();
@@ -1451,6 +1492,65 @@ public class ChatPopupWindow extends JDialog {
         area.setFont(Theme.FONT_BODY);
         area.setBorder(BorderFactory.createEmptyBorder(4, 2, 4, 2));
         return area;
+    }
+
+    private JPanel buildEditBanner() {
+        JPanel banner = new JPanel(new BorderLayout(8, 0)) {
+            @Override
+            public Dimension getMaximumSize() {
+                return new Dimension(Integer.MAX_VALUE, getPreferredSize().height);
+            }
+        };
+        banner.setAlignmentX(Component.LEFT_ALIGNMENT);
+        banner.setOpaque(true);
+        banner.setBackground(Theme.BG_HEADER);
+        banner.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createMatteBorder(1, 0, 0, 0, Theme.BORDER),
+                BorderFactory.createEmptyBorder(6, 12, 6, 12)
+        ));
+
+        editAccentBar = new JPanel();
+        editAccentBar.setBackground(Theme.ACCENT);
+        editAccentBar.setPreferredSize(new Dimension(3, 28));
+
+        JPanel info = new JPanel();
+        info.setLayout(new BoxLayout(info, BoxLayout.Y_AXIS));
+        info.setOpaque(false);
+
+        editTitleLabel = new JLabel(I18n.t(I18n.Key.EDIT_MESSAGE_TITLE));
+        editTitleLabel.setIcon(UiIcons.edit(
+                () -> Theme.isLight(Theme.BG_WINDOW) ? Theme.ACCENT : Theme.ACCENT_HOVER, 11));
+        editTitleLabel.setIconTextGap(5);
+        editTitleLabel.setFont(Theme.FONT_SMALL.deriveFont(Font.BOLD));
+        editTitleLabel.setForeground(Theme.isLight(Theme.BG_WINDOW) ? Theme.ACCENT : Theme.ACCENT_HOVER);
+
+        editPreviewLabel = new JLabel(" ");
+        editPreviewLabel.setFont(Theme.FONT_SMALL);
+        editPreviewLabel.setForeground(Theme.TEXT_MUTED);
+
+        info.add(editTitleLabel);
+        info.add(editPreviewLabel);
+
+        cancelEditButton = UiIcons.iconButton(
+                UiIcons.cancel(() -> Theme.TEXT_MUTED, 12),
+                UiIcons.cancel(() -> Theme.TEXT_PRIMARY, 12),
+                22, 6);
+        cancelEditButton.setToolTipText(I18n.t(I18n.Key.CANCEL));
+        cancelEditButton.addActionListener(e -> cancelEditingMessage(true));
+
+        JPanel left = new JPanel(new BorderLayout(8, 0));
+        left.setOpaque(false);
+        left.add(editAccentBar, BorderLayout.WEST);
+        left.add(info, BorderLayout.CENTER);
+
+        JPanel right = new JPanel(new GridBagLayout());
+        right.setOpaque(false);
+        right.add(cancelEditButton);
+
+        banner.add(left, BorderLayout.CENTER);
+        banner.add(right, BorderLayout.EAST);
+        banner.setVisible(false);
+        return banner;
     }
 
     private JPanel buildInputBar() {
@@ -1518,9 +1618,11 @@ public class ChatPopupWindow extends JDialog {
         inputBox.add(inputScroll, BorderLayout.CENTER);
         inputBox.add(messageCounter, BorderLayout.EAST);
 
+        sendIconNormal = UiIcons.send(() -> Theme.BTN_ACCENT_TEXT, 15);
+        saveEditIcon = UiIcons.check(() -> Theme.BTN_ACCENT_TEXT, 15);
         sendButton = UiIcons.themedButton(
                 null,
-                UiIcons.send(() -> Theme.BTN_ACCENT_TEXT, 15),
+                sendIconNormal,
                 () -> Theme.BTN_ACCENT,
                 () -> Theme.BTN_ACCENT_HOVER,
                 null,
@@ -1585,6 +1687,10 @@ public class ChatPopupWindow extends JDialog {
     }
 
     private void sendCurrentMessage() {
+        if (editingMessage != null) {
+            commitEditingMessage();
+            return;
+        }
         String text = inputField.getText().trim();
         if (text.isEmpty() && pendingAttachments.isEmpty()) return;
         if (text.length() > ChatMessage.MAX_TEXT_LENGTH) {
@@ -2736,6 +2842,10 @@ public class ChatPopupWindow extends JDialog {
     }
 
     private void promptEditMessage(ChatMessage msg) {
+        beginEditingMessage(msg);
+    }
+
+    private void beginEditingMessage(ChatMessage msg) {
         if (msg == null || msg.isIncoming()) {
             return;
         }
@@ -2743,120 +2853,119 @@ public class ChatPopupWindow extends JDialog {
         if (att != null && att.isEncryptedPendingUnlock()) {
             return;
         }
-
-        final String convKey = activeConversationKey();
-        final ChatGroup targetGroup = activeGroup;
-        final Peer targetPeer = activePeer;
-        if (convKey == null) {
+        if (activeConversationKey() == null) {
             return;
         }
 
-        JPanel body = new JPanel();
-        body.setLayout(new BoxLayout(body, BoxLayout.Y_AXIS));
-        body.setBackground(Theme.BG_WINDOW);
-        body.setBorder(BorderFactory.createEmptyBorder(12, 16, 8, 16));
+        if (this.editingMessage == null) {
+            this.draftBeforeEdit = inputField.getText();
+        }
+        this.editingMessage = msg;
+        this.editingTargetGroup = activeGroup;
+        this.editingTargetPeer = activePeer;
 
-        JTextArea editArea = new JTextArea(msg.getText());
-        editArea.setLineWrap(true);
-        editArea.setWrapStyleWord(true);
-        editArea.setBackground(Theme.BG_INPUT);
-        editArea.setForeground(Theme.TEXT_PRIMARY);
-        editArea.setCaretColor(Theme.TEXT_PRIMARY);
-        editArea.setFont(Theme.FONT_BODY);
-        editArea.setBorder(BorderFactory.createEmptyBorder(8, 10, 8, 10));
-        installLengthLimit(editArea, ChatMessage.MAX_TEXT_LENGTH);
-        editArea.setCaretPosition(editArea.getDocument().getLength());
+        String raw = msg.getText() != null ? msg.getText().replaceAll("\\s+", " ").trim() : "";
+        if (raw.isEmpty() && att != null) {
+            raw = att.getFileName();
+        }
+        editTitleLabel.setText(I18n.t(I18n.Key.EDIT_MESSAGE_TITLE));
+        editPreviewLabel.setText(truncateFileName(raw, 48));
+        editBanner.setVisible(true);
 
-        JScrollPane editScroll = new JScrollPane(editArea);
-        UiComponents.styleScrollPane(editScroll, () -> Theme.BG_INPUT);
-        editScroll.setBorder(BorderFactory.createLineBorder(Theme.BORDER, 1));
-        editScroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
-        editScroll.setPreferredSize(new Dimension(320, 120));
-        editScroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, 120));
-        editScroll.setAlignmentX(Component.LEFT_ALIGNMENT);
-        body.add(editScroll);
-        body.add(Box.createVerticalStrut(6));
+        attachButton.setEnabled(false);
+        if (sendButton != null && saveEditIcon != null) {
+            sendButton.setIcon(saveEditIcon);
+            sendButton.setToolTipText(I18n.t(I18n.Key.EDIT_MESSAGE_HINT));
+        }
 
-        JPanel footer = new JPanel(new BorderLayout(8, 0));
-        footer.setOpaque(false);
-        footer.setAlignmentX(Component.LEFT_ALIGNMENT);
-        footer.setMaximumSize(new Dimension(Integer.MAX_VALUE, 20));
+        String text = msg.getText() != null ? msg.getText() : "";
+        inputField.setText(text);
+        inputField.setCaretPosition(inputField.getDocument().getLength());
+        updateInputAreaHeight();
+        refreshEditingHighlights();
+        southPanelRevalidate();
 
-        JLabel hintLabel = new JLabel(I18n.t(I18n.Key.EDIT_MESSAGE_HINT));
-        hintLabel.setFont(Theme.FONT_SMALL);
-        hintLabel.setForeground(Theme.TEXT_MUTED);
-
-        JLabel counterLabel = new JLabel();
-        counterLabel.setFont(Theme.FONT_SMALL);
-
-        footer.add(hintLabel, BorderLayout.WEST);
-        footer.add(counterLabel, BorderLayout.EAST);
-        body.add(footer);
-
-        JButton cancelButton = secondaryButton(I18n.t(I18n.Key.CANCEL));
-        JButton saveButton = accentButton(I18n.t(I18n.Key.SAVE));
-        saveButton.setPreferredSize(new Dimension(96, 32));
-
-        Runnable refreshState = () -> {
-            int len = editArea.getText().length();
-            counterLabel.setText(len + "/" + ChatMessage.MAX_TEXT_LENGTH);
-            counterLabel.setForeground(len >= ChatMessage.MAX_TEXT_LENGTH
-                    ? Theme.DANGER : Theme.TEXT_MUTED);
-            boolean valid = msg.hasAttachment() || !editArea.getText().trim().isEmpty();
-            saveButton.setEnabled(valid);
-        };
-        refreshState.run();
-        editArea.getDocument().addDocumentListener(new DocumentListener() {
-            @Override
-            public void insertUpdate(DocumentEvent e) {
-                refreshState.run();
-            }
-
-            @Override
-            public void removeUpdate(DocumentEvent e) {
-                refreshState.run();
-            }
-
-            @Override
-            public void changedUpdate(DocumentEvent e) {
-                refreshState.run();
+        SwingUtilities.invokeLater(() -> {
+            inputField.requestFocusInWindow();
+            for (Component comp : messagesContainer.getComponents()) {
+                if (comp instanceof MessageRow row && row.msg == msg) {
+                    messagesContainer.scrollRectToVisible(row.getBounds());
+                    break;
+                }
             }
         });
+    }
 
-        JDialog dialog = createStyledDialog(I18n.t(I18n.Key.EDIT_MESSAGE_TITLE), body,
-                dialogButtons(cancelButton, saveButton), null, editArea);
-        cancelButton.addActionListener(e -> dialog.dispose());
+    private void cancelEditingMessage(boolean restoreDraft) {
+        if (this.editingMessage == null) {
+            return;
+        }
+        this.editingMessage = null;
+        this.editingTargetGroup = null;
+        this.editingTargetPeer = null;
 
-        Runnable commitEdit = () -> {
-            String updated = editArea.getText().trim();
-            if (!msg.hasAttachment() && updated.isEmpty()) {
-                return;
-            }
-            dialog.dispose();
-            if (!updated.equals(msg.getText())) {
-                applyLocalMessageEdit(msg, updated, targetGroup, targetPeer);
-            }
-        };
+        if (editBanner != null) {
+            editBanner.setVisible(false);
+        }
+        attachButton.setEnabled(true);
+        if (sendButton != null && sendIconNormal != null) {
+            sendButton.setIcon(sendIconNormal);
+            sendButton.setToolTipText(I18n.t(I18n.Key.CHAT_INPUT_TOOLTIP));
+        }
 
-        saveButton.addActionListener(e -> commitEdit.run());
-        editArea.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), "aero-commit-edit");
-        editArea.getActionMap().put("aero-commit-edit", new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                commitEdit.run();
-            }
-        });
-        editArea.getInputMap().put(
-                KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, InputEvent.SHIFT_DOWN_MASK),
-                "aero-insert-newline");
-        editArea.getActionMap().put("aero-insert-newline", new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                editArea.replaceSelection("\n");
-            }
-        });
+        if (restoreDraft) {
+            inputField.setText(draftBeforeEdit != null ? draftBeforeEdit : "");
+            inputField.setCaretPosition(inputField.getDocument().getLength());
+        } else {
+            inputField.setText("");
+        }
+        draftBeforeEdit = null;
+        updateInputAreaHeight();
+        refreshEditingHighlights();
+        southPanelRevalidate();
+    }
 
-        dialog.setVisible(true);
+    private void commitEditingMessage() {
+        ChatMessage target = this.editingMessage;
+        if (target == null) {
+            return;
+        }
+        String updated = inputField.getText().trim();
+        if (updated.length() > ChatMessage.MAX_TEXT_LENGTH) {
+            JOptionPane.showMessageDialog(this,
+                    I18n.t(I18n.Key.MESSAGE_TOO_LONG,
+                            updated.length(), ChatMessage.MAX_TEXT_LENGTH),
+                    I18n.t(I18n.Key.MESSAGE_TOO_LONG_TITLE),
+                    JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        if (!target.hasAttachment() && updated.isEmpty()) {
+            inputField.requestFocusInWindow();
+            return;
+        }
+
+        ChatGroup targetGroup = this.editingTargetGroup;
+        Peer targetPeer = this.editingTargetPeer;
+        cancelEditingMessage(false);
+        if (!updated.equals(target.getText())) {
+            applyLocalMessageEdit(target, updated, targetGroup, targetPeer);
+        }
+        inputField.requestFocusInWindow();
+    }
+
+    private void southPanelRevalidate() {
+        if (chatViewPanel != null) {
+            chatViewPanel.revalidate();
+            chatViewPanel.repaint();
+        }
+    }
+
+    private void refreshEditingHighlights() {
+        for (Component comp : messagesContainer.getComponents()) {
+            if (comp instanceof MessageRow row) {
+                row.bubble.repaint();
+            }
+        }
     }
 
     private void confirmAndDeleteMessage(ChatMessage msg) {
@@ -2870,15 +2979,29 @@ public class ChatPopupWindow extends JDialog {
             return;
         }
 
+        showDangerConfirmDialog(
+                I18n.t(I18n.Key.DELETE_MESSAGE_TITLE),
+                I18n.t(msg.isIncoming()
+                        ? I18n.Key.DELETE_MESSAGE_CONFIRM_LOCAL
+                        : I18n.Key.DELETE_MESSAGE_CONFIRM),
+                () -> applyLocalMessageDelete(msg, convKey, targetGroup, targetPeer));
+    }
+
+    private void showDangerConfirmDialog(String title, String messageText, Runnable onConfirm) {
         JPanel body = new JPanel(new BorderLayout());
         body.setBackground(Theme.BG_WINDOW);
         body.setBorder(BorderFactory.createEmptyBorder(14, 16, 12, 16));
 
-        JLabel prompt = new JLabel(I18n.t(msg.isIncoming()
-                ? I18n.Key.DELETE_MESSAGE_CONFIRM_LOCAL
-                : I18n.Key.DELETE_MESSAGE_CONFIRM));
+        JTextArea prompt = new JTextArea(messageText);
+        prompt.setEditable(false);
+        prompt.setFocusable(false);
+        prompt.setOpaque(false);
+        prompt.setLineWrap(true);
+        prompt.setWrapStyleWord(true);
         prompt.setFont(Theme.FONT_BODY);
         prompt.setForeground(Theme.TEXT_PRIMARY);
+        prompt.setSize(new Dimension(300, Short.MAX_VALUE));
+        prompt.setPreferredSize(new Dimension(300, prompt.getPreferredSize().height));
         body.add(prompt, BorderLayout.CENTER);
 
         JButton cancelButton = secondaryButton(I18n.t(I18n.Key.CANCEL));
@@ -2895,12 +3018,12 @@ public class ChatPopupWindow extends JDialog {
         deleteButton.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
         deleteButton.setPreferredSize(new Dimension(96, 32));
 
-        JDialog dialog = createStyledDialog(I18n.t(I18n.Key.DELETE_MESSAGE_TITLE), body,
+        JDialog dialog = createStyledDialog(title, body,
                 dialogButtons(cancelButton, deleteButton), deleteButton, deleteButton);
         cancelButton.addActionListener(e -> dialog.dispose());
         deleteButton.addActionListener(e -> {
             dialog.dispose();
-            applyLocalMessageDelete(msg, convKey, targetGroup, targetPeer);
+            onConfirm.run();
         });
         dialog.setVisible(true);
     }
@@ -2934,6 +3057,9 @@ public class ChatPopupWindow extends JDialog {
             return;
         }
 
+        if (msg == editingMessage) {
+            cancelEditingMessage(false);
+        }
         cleanupMessageResources(msg);
         if (!msg.isIncoming() && msg.hasAttachment()) {
             network.revokeFileOffer(msg.getAttachment().getTransferId());
@@ -3432,18 +3558,40 @@ public class ChatPopupWindow extends JDialog {
     }
 
     public void promptRename() {
-        String updated = (String) JOptionPane.showInputDialog(
-                isVisible() ? this : null,
-                I18n.t(I18n.Key.RENAME_PROMPT),
-                I18n.t(I18n.Key.RENAME_TITLE),
-                JOptionPane.PLAIN_MESSAGE,
-                null,
-                null,
-                network.getMyName()
-        );
-        if (updated != null && !updated.trim().isEmpty()) {
-            applyDisplayName(updated.trim());
-        }
+        JPanel body = new JPanel();
+        body.setLayout(new BoxLayout(body, BoxLayout.Y_AXIS));
+        body.setBackground(Theme.BG_WINDOW);
+        body.setBorder(BorderFactory.createEmptyBorder(10, 16, 6, 16));
+
+        JLabel promptLabel = new JLabel(I18n.t(I18n.Key.RENAME_PROMPT));
+        promptLabel.setFont(Theme.FONT_BODY);
+        promptLabel.setForeground(Theme.TEXT_PRIMARY);
+        promptLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
+        body.add(promptLabel);
+        body.add(Box.createVerticalStrut(8));
+
+        JTextField nameInput = new JTextField(network.getMyName());
+        styleTextField(nameInput);
+        nameInput.setMaximumSize(new Dimension(Integer.MAX_VALUE, 32));
+        nameInput.setAlignmentX(Component.LEFT_ALIGNMENT);
+        nameInput.selectAll();
+        body.add(nameInput);
+
+        JButton cancelButton = secondaryButton(I18n.t(I18n.Key.CANCEL));
+        JButton saveButton = accentButton(I18n.t(I18n.Key.SAVE));
+        saveButton.setPreferredSize(new Dimension(96, 32));
+
+        JDialog dialog = createStyledDialog(I18n.t(I18n.Key.RENAME_TITLE), body,
+                dialogButtons(cancelButton, saveButton), saveButton, nameInput);
+        cancelButton.addActionListener(e -> dialog.dispose());
+        saveButton.addActionListener(e -> {
+            String updated = nameInput.getText().trim();
+            if (!updated.isEmpty()) {
+                applyDisplayName(updated);
+                dialog.dispose();
+            }
+        });
+        dialog.setVisible(true);
     }
 
     private void saveDisplayNameFromSettings() {
@@ -3537,7 +3685,20 @@ public class ChatPopupWindow extends JDialog {
         dropBanner.setText(I18n.t(I18n.Key.DROP_FILES_HINT));
         newGroupButton.setText(I18n.t(I18n.Key.GROUP_BUTTON));
         renameButton.setToolTipText(I18n.t(I18n.Key.RENAME_BUTTON));
-        inputField.setToolTipText(I18n.t(I18n.Key.CHAT_INPUT_TOOLTIP));
+        inputField.setToolTipText(editingMessage != null
+                ? I18n.t(I18n.Key.EDIT_MESSAGE_HINT)
+                : I18n.t(I18n.Key.CHAT_INPUT_TOOLTIP));
+        if (editTitleLabel != null) {
+            editTitleLabel.setText(I18n.t(I18n.Key.EDIT_MESSAGE_TITLE));
+        }
+        if (cancelEditButton != null) {
+            cancelEditButton.setToolTipText(I18n.t(I18n.Key.CANCEL));
+        }
+        if (sendButton != null) {
+            sendButton.setToolTipText(editingMessage != null
+                    ? I18n.t(I18n.Key.EDIT_MESSAGE_HINT)
+                    : I18n.t(I18n.Key.CHAT_INPUT_TOOLTIP));
+        }
         myStatusLabel.setText(I18n.t(I18n.Key.ONLINE));
         messageCounter.setToolTipText(I18n.t(I18n.Key.MESSAGE_LIMIT_TOOLTIP,
                 ChatMessage.MAX_TEXT_LENGTH));
@@ -3909,16 +4070,13 @@ public class ChatPopupWindow extends JDialog {
     }
 
     private void deleteGroup(ChatGroup group) {
-        int result = JOptionPane.showConfirmDialog(
-                isVisible() ? this : null,
-                I18n.t(I18n.Key.DELETE_GROUP_MESSAGE, group.getName()),
+        showDangerConfirmDialog(
                 I18n.t(I18n.Key.DELETE_GROUP_TITLE),
-                JOptionPane.YES_NO_OPTION,
-                JOptionPane.WARNING_MESSAGE
-        );
-        if (result != JOptionPane.YES_OPTION) {
-            return;
-        }
+                I18n.t(I18n.Key.DELETE_GROUP_MESSAGE, group.getName()),
+                () -> performDeleteGroup(group));
+    }
+
+    private void performDeleteGroup(ChatGroup group) {
 
         List<ChatMessage> removedMsgs;
         synchronized (histories) {
@@ -3929,6 +4087,9 @@ public class ChatPopupWindow extends JDialog {
         }
         if (removedMsgs != null) {
             for (ChatMessage msg : removedMsgs) {
+                if (msg == editingMessage) {
+                    cancelEditingMessage(false);
+                }
                 cleanupMessageResources(msg);
                 if (!msg.isIncoming() && msg.hasAttachment()) {
                     network.revokeFileOffer(msg.getAttachment().getTransferId());
@@ -4081,6 +4242,8 @@ public class ChatPopupWindow extends JDialog {
 
     private void styleCheckBox(JCheckBox box) {
         box.setOpaque(false);
+        box.setContentAreaFilled(false);
+        box.setBorderPainted(false);
         box.setForeground(Theme.TEXT_PRIMARY);
         box.setFont(Theme.FONT_BODY);
         box.setFocusPainted(false);
@@ -4240,6 +4403,7 @@ public class ChatPopupWindow extends JDialog {
 
         PresetChipButton(Theme.Preset preset) {
             this.preset = preset;
+            setUI(new BasicButtonUI());
             setOpaque(false);
             setContentAreaFilled(false);
             setBorderPainted(false);
@@ -4439,7 +4603,12 @@ public class ChatPopupWindow extends JDialog {
                     new BorderLayout(0, 4),
                     14,
                     () -> incoming ? Theme.BUBBLE_IN : Theme.BUBBLE_OUT,
-                    incoming ? () -> Theme.BORDER : null) {
+                    () -> {
+                        if (editingMessage == msg) {
+                            return Theme.isLight(Theme.BG_WINDOW) ? Theme.ACCENT : Color.WHITE;
+                        }
+                        return incoming ? Theme.BORDER : null;
+                    }) {
                 @Override
                 public Dimension getMaximumSize() {
                     return getPreferredSize();

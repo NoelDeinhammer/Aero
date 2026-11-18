@@ -14,6 +14,7 @@ import javax.swing.JScrollBar;
 import javax.swing.JScrollPane;
 import javax.swing.SwingConstants;
 import javax.swing.plaf.basic.BasicMenuItemUI;
+import javax.swing.plaf.basic.BasicPopupMenuUI;
 import javax.swing.plaf.basic.BasicScrollBarUI;
 import java.awt.BasicStroke;
 import java.awt.Color;
@@ -207,6 +208,8 @@ public final class UiComponents {
     public static final class ToggleSwitch extends JCheckBox {
         public ToggleSwitch() {
             setOpaque(false);
+            setContentAreaFilled(false);
+            setBorderPainted(false);
             setFocusPainted(false);
             setBorder(BorderFactory.createEmptyBorder(4, 0, 4, 0));
             setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
@@ -271,6 +274,8 @@ public final class UiComponents {
         public ThemedRadioButton(String text) {
             super(text);
             setOpaque(false);
+            setContentAreaFilled(false);
+            setBorderPainted(false);
             setFocusPainted(false);
             setFont(Theme.FONT_BODY);
             setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
@@ -395,6 +400,14 @@ public final class UiComponents {
 
     public static JPopupMenu createPopupMenu() {
         JPopupMenu menu = new JPopupMenu();
+        menu.setUI(new BasicPopupMenuUI() {
+            @Override
+            public void paint(Graphics g, JComponent c) {
+                g.setColor(Theme.BG_CARD);
+                g.fillRect(0, 0, c.getWidth(), c.getHeight());
+            }
+        });
+        menu.setOpaque(true);
         menu.setBackground(Theme.BG_CARD);
         menu.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createLineBorder(Theme.BORDER, 1),
@@ -407,7 +420,12 @@ public final class UiComponents {
         JPanel wrap = new JPanel(null) {
             @Override
             public Dimension getPreferredSize() {
-                return new Dimension(120, 7);
+                return new Dimension(1, 7);
+            }
+
+            @Override
+            public Dimension getMaximumSize() {
+                return new Dimension(Integer.MAX_VALUE, 7);
             }
 
             @Override
@@ -422,29 +440,65 @@ public final class UiComponents {
 
     public static JMenuItem createMenuItem(String text, Icon icon, Color fgOverride) {
         JMenuItem item = new JMenuItem(text, icon);
-        Color fg = fgOverride != null ? fgOverride : Theme.TEXT_PRIMARY;
         item.setFont(Theme.FONT_SMALL);
-        item.setForeground(fg);
-        item.setBackground(Theme.BG_CARD);
         item.setOpaque(false);
-        item.setIconTextGap(8);
-        item.setBorder(BorderFactory.createEmptyBorder(6, 10, 6, 12));
+        item.setContentAreaFilled(false);
+        item.setBorderPainted(false);
+        item.setFocusPainted(false);
+        item.setBorder(BorderFactory.createEmptyBorder());
         item.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
         item.setUI(new BasicMenuItemUI() {
-            {
-                selectionBackground = Theme.BG_CARD_HOVER;
-                selectionForeground = fg;
+            private static final int PAD_LEFT = 10;
+            private static final int PAD_RIGHT = 14;
+            private static final int ICON_GAP = 9;
+
+            @Override
+            public Dimension getPreferredSize(JComponent c) {
+                JMenuItem mi = (JMenuItem) c;
+                Font font = mi.getFont() != null ? mi.getFont() : Theme.FONT_SMALL;
+                FontMetrics fm = mi.getFontMetrics(font);
+                Icon ic = mi.getIcon();
+                int iconW = ic != null ? ic.getIconWidth() : 0;
+                int iconH = ic != null ? ic.getIconHeight() : 0;
+                String label = mi.getText() != null ? mi.getText() : "";
+                int textW = fm.stringWidth(label);
+                int w = PAD_LEFT + iconW + (iconW > 0 ? ICON_GAP : 0) + textW + PAD_RIGHT;
+                int h = Math.max(28, Math.max(iconH, fm.getHeight()) + 10);
+                return new Dimension(w, h);
             }
 
             @Override
-            protected void paintBackground(Graphics g, JMenuItem menuItem, Color bgColor) {
-                if (menuItem.isArmed() || menuItem.getModel().isSelected()) {
-                    Graphics2D g2 = (Graphics2D) g.create();
-                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            public void paint(Graphics g, JComponent c) {
+                JMenuItem mi = (JMenuItem) c;
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+
+                int w = mi.getWidth();
+                int h = mi.getHeight();
+                if (mi.isArmed() || mi.getModel().isSelected()) {
                     g2.setColor(Theme.BG_CARD_HOVER);
-                    g2.fillRoundRect(0, 0, menuItem.getWidth(), menuItem.getHeight(), 6, 6);
-                    g2.dispose();
+                    g2.fillRoundRect(0, 0, w, h, 6, 6);
                 }
+
+                int x = PAD_LEFT;
+                Icon ic = mi.getIcon();
+                if (ic != null) {
+                    int iy = (h - ic.getIconHeight()) / 2;
+                    ic.paintIcon(mi, g2, x, iy);
+                    x += ic.getIconWidth() + ICON_GAP;
+                }
+
+                String label = mi.getText();
+                if (label != null && !label.isEmpty()) {
+                    Font font = mi.getFont() != null ? mi.getFont() : Theme.FONT_SMALL;
+                    g2.setFont(font);
+                    FontMetrics fm = g2.getFontMetrics();
+                    g2.setColor(fgOverride != null ? fgOverride : Theme.TEXT_PRIMARY);
+                    int ty = (h - fm.getHeight()) / 2 + fm.getAscent();
+                    g2.drawString(label, x, ty);
+                }
+                g2.dispose();
             }
         });
         return item;

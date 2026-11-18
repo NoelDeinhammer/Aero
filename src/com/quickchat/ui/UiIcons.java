@@ -150,6 +150,17 @@ public final class UiIcons {
         });
     }
 
+    public static Icon check(Supplier<Color> color, int size) {
+        return new VectorIcon(size, size, color, (g, w, h) -> {
+            g.setStroke(new BasicStroke(2.0f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            Path2D p = new Path2D.Float();
+            p.moveTo(w * 0.20f, h * 0.54f);
+            p.lineTo(w * 0.42f, h * 0.76f);
+            p.lineTo(w * 0.82f, h * 0.26f);
+            g.draw(p);
+        });
+    }
+
     public static Icon moreDots(Color color, int size) {
         return moreDots(() -> color, size);
     }
