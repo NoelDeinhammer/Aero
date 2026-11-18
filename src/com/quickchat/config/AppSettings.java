@@ -27,16 +27,25 @@ import java.util.UUID;
  */
 public final class AppSettings {
     private static final String APP_FOLDER = "Aero";
+    private static final String DEFAULT_BG_HEX = "#18191E";
+    private static final String DEFAULT_ACCENT_HEX = "#5865F2";
+    private static final String DEFAULT_BUBBLE_OUT_HEX = "#5865F2";
+    private static final String DEFAULT_BUBBLE_IN_HEX = "#2D303A";
 
     private final Path file;
     private String displayName;
     private boolean notificationsEnabled = true;
     private boolean alwaysOnTop = false;
     private boolean keepMessages = false;
+    private boolean autoDownloadImages = true;
     private I18n.Language language = I18n.Language.GERMAN;
     private String peerId;
     private int windowWidth = 0;
     private int windowHeight = 0;
+    private String themeBgWindow = DEFAULT_BG_HEX;
+    private String themeAccent = DEFAULT_ACCENT_HEX;
+    private String themeBubbleOut = DEFAULT_BUBBLE_OUT_HEX;
+    private String themeBubbleIn = DEFAULT_BUBBLE_IN_HEX;
     private final Map<String, ChatGroup> groups = new LinkedHashMap<>();
     private final Set<String> deletedGroups = new LinkedHashSet<>();
 
@@ -73,9 +82,15 @@ public final class AppSettings {
                 "true".equalsIgnoreCase(properties.getProperty("alwaysOnTop", "false"));
         settings.keepMessages =
                 "true".equalsIgnoreCase(properties.getProperty("keepMessages", "false"));
+        settings.autoDownloadImages =
+                !"false".equalsIgnoreCase(properties.getProperty("autoDownloadImages", "true"));
         settings.language = I18n.fromCode(properties.getProperty("language", "de"));
         settings.windowWidth = parsePositiveInt(properties.getProperty("windowWidth"));
         settings.windowHeight = parsePositiveInt(properties.getProperty("windowHeight"));
+        settings.themeBgWindow = normalizeHex(properties.getProperty("theme.bgWindow"), DEFAULT_BG_HEX);
+        settings.themeAccent = normalizeHex(properties.getProperty("theme.accent"), DEFAULT_ACCENT_HEX);
+        settings.themeBubbleOut = normalizeHex(properties.getProperty("theme.bubbleOut"), DEFAULT_BUBBLE_OUT_HEX);
+        settings.themeBubbleIn = normalizeHex(properties.getProperty("theme.bubbleIn"), DEFAULT_BUBBLE_IN_HEX);
 
         settings.peerId = trimToNull(properties.getProperty("peerId"));
         if (settings.peerId == null) {
@@ -150,6 +165,16 @@ public final class AppSettings {
         save();
     }
 
+    public synchronized boolean isAutoDownloadImages() {
+        return autoDownloadImages;
+    }
+
+    public synchronized void setAutoDownloadImages(boolean enabled) {
+        if (this.autoDownloadImages == enabled) return;
+        this.autoDownloadImages = enabled;
+        save();
+    }
+
     public synchronized I18n.Language getLanguage() {
         return language;
     }
@@ -177,6 +202,40 @@ public final class AppSettings {
         if (this.windowWidth == width && this.windowHeight == height) return;
         this.windowWidth = width;
         this.windowHeight = height;
+        save();
+    }
+
+    public synchronized String getThemeBgWindow() {
+        return themeBgWindow;
+    }
+
+    public synchronized String getThemeAccent() {
+        return themeAccent;
+    }
+
+    public synchronized String getThemeBubbleOut() {
+        return themeBubbleOut;
+    }
+
+    public synchronized String getThemeBubbleIn() {
+        return themeBubbleIn;
+    }
+
+    public synchronized void setThemeColors(String bgWindow, String accent, String bubbleOut, String bubbleIn) {
+        String bg = normalizeHex(bgWindow, DEFAULT_BG_HEX);
+        String ac = normalizeHex(accent, DEFAULT_ACCENT_HEX);
+        String bOut = normalizeHex(bubbleOut, DEFAULT_BUBBLE_OUT_HEX);
+        String bIn = normalizeHex(bubbleIn, DEFAULT_BUBBLE_IN_HEX);
+        if (bg.equals(this.themeBgWindow)
+                && ac.equals(this.themeAccent)
+                && bOut.equals(this.themeBubbleOut)
+                && bIn.equals(this.themeBubbleIn)) {
+            return;
+        }
+        this.themeBgWindow = bg;
+        this.themeAccent = ac;
+        this.themeBubbleOut = bOut;
+        this.themeBubbleIn = bIn;
         save();
     }
 
@@ -220,8 +279,13 @@ public final class AppSettings {
         properties.setProperty("notifications", Boolean.toString(notificationsEnabled));
         properties.setProperty("alwaysOnTop", Boolean.toString(alwaysOnTop));
         properties.setProperty("keepMessages", Boolean.toString(keepMessages));
+        properties.setProperty("autoDownloadImages", Boolean.toString(autoDownloadImages));
         properties.setProperty("language", language.getCode());
         properties.setProperty("peerId", peerId);
+        properties.setProperty("theme.bgWindow", themeBgWindow);
+        properties.setProperty("theme.accent", themeAccent);
+        properties.setProperty("theme.bubbleOut", themeBubbleOut);
+        properties.setProperty("theme.bubbleIn", themeBubbleIn);
         if (windowWidth > 0 && windowHeight > 0) {
             properties.setProperty("windowWidth", Integer.toString(windowWidth));
             properties.setProperty("windowHeight", Integer.toString(windowHeight));
@@ -267,12 +331,20 @@ public final class AppSettings {
      * profile name, so multiple instances never overwrite each other.
      */
     public Path getHistoryFile() {
+        return file.resolveSibling(profileBaseName() + "-messages.properties");
+    }
+
+    /**
+     * Persistent media cache folder for auto-downloaded images when Keep Messages is enabled.
+     */
+    public Path getMediaDir() {
+        return file.resolveSibling(profileBaseName() + "-media");
+    }
+
+    private String profileBaseName() {
         String name = file.getFileName().toString();
         int dot = name.lastIndexOf('.');
-        if (dot > 0) {
-            name = name.substring(0, dot);
-        }
-        return file.resolveSibling(name + "-messages.properties");
+        return dot > 0 ? name.substring(0, dot) : name;
     }
 
     private static Path resolveFile(String profileHint) {
@@ -315,5 +387,13 @@ public final class AppSettings {
         } catch (NumberFormatException e) {
             return 0;
         }
+    }
+
+    private static String normalizeHex(String raw, String fallback) {
+        if (raw == null) return fallback;
+        String t = raw.trim();
+        if (t.startsWith("#")) t = t.substring(1);
+        if (!t.matches("[0-9A-Fa-f]{6}")) return fallback;
+        return "#" + t.toUpperCase();
     }
 }

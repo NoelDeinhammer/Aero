@@ -17,9 +17,11 @@ import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
 import javax.swing.ButtonGroup;
+import javax.swing.Icon;
 import javax.swing.ImageIcon;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
+import javax.swing.JColorChooser;
 import javax.swing.JComponent;
 import javax.swing.JDialog;
 import javax.swing.JLabel;
@@ -41,6 +43,7 @@ import javax.swing.Timer;
 import javax.swing.TransferHandler;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
+import javax.swing.plaf.basic.BasicButtonUI;
 import javax.swing.text.AbstractDocument;
 import javax.swing.text.AttributeSet;
 import javax.swing.text.BadLocationException;
@@ -48,6 +51,7 @@ import javax.swing.text.DefaultEditorKit;
 import javax.swing.text.DocumentFilter;
 import javax.swing.text.JTextComponent;
 import javax.swing.text.View;
+import java.awt.BasicStroke;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.Color;
@@ -58,13 +62,17 @@ import java.awt.FileDialog;
 import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.FontMetrics;
+import java.awt.Graphics;
+import java.awt.Graphics2D;
 import java.awt.GraphicsDevice;
 import java.awt.GraphicsEnvironment;
 import java.awt.GridBagLayout;
+import java.awt.GridLayout;
 import java.awt.Image;
 import java.awt.Insets;
 import java.awt.Point;
 import java.awt.Rectangle;
+import java.awt.RenderingHints;
 import java.awt.Toolkit;
 import java.awt.datatransfer.Clipboard;
 import java.awt.datatransfer.DataFlavor;
@@ -110,19 +118,22 @@ import java.util.TooManyListenersException;
 import java.util.UUID;
 import java.util.WeakHashMap;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
+import java.util.stream.Stream;
 
 /**
- * Small, lightweight floating on-screen chat window.
- * Toggled by the global keyboard shortcut; lets the user pick a person or
- * group and chat immediately.
+ * Lightweight, themeable floating LAN chat window.
+ * Supports bottom-right/edge resizing, automatic <5MB screenshot downloads,
+ * message editing/deleting, and live customizable color themes.
  */
 public class ChatPopupWindow extends JDialog {
-    private static final int DEFAULT_WIDTH = 350;
-    private static final int DEFAULT_HEIGHT = 470;
+    private static final int DEFAULT_WIDTH = 360;
+    private static final int DEFAULT_HEIGHT = 490;
     private static final int MIN_WIDTH = 350;
     private static final int MIN_HEIGHT = 380;
-    private static final int MAX_INLINE_IMG_W = 216;
+    private static final int MAX_INLINE_IMG_W = 196;
     private static final int MAX_INLINE_IMG_H = 260;
+    private static final long AUTO_DOWNLOAD_IMAGE_MAX_BYTES = 5L * 1024L * 1024L;
     private static final DateTimeFormatter SCREENSHOT_TIME =
             DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
     private static final String CARD_PEERS = "PEERS";
@@ -133,38 +144,58 @@ public class ChatPopupWindow extends JDialog {
     private final AppSettings settings;
     private final CardLayout cardLayout = new CardLayout();
     private final JPanel contentCards = new JPanel(cardLayout);
+    private final JPanel root;
 
     // Header
-    private final JButton backButton = new JButton("←");
+    private JPanel headerPanel;
+    private final JButton backButton;
     private final JLabel headerTitle = new JLabel("Aero");
     private final JLabel headerSubtitle = new JLabel(I18n.t(I18n.Key.APP_SUBTITLE));
-    private final JLabel shortcutLabel = new JLabel("Ctrl+Alt+Space");
-    private final JButton membersButton = new JButton("👥");
-    private final JButton settingsButton = new JButton("⚙");
+    private final UiComponents.PillLabel shortcutLabel = new UiComponents.PillLabel(
+            "Ctrl+Alt+Space", 10, () -> Theme.BG_CARD, () -> Theme.TEXT_MUTED, () -> Theme.BORDER);
+    private final JButton membersButton;
+    private final JButton settingsButton;
 
     // Peer list view
+    private JPanel peersViewPanel;
+    private UiComponents.RoundedPanel selfBarCard;
+    private UiComponents.AvatarBadge selfAvatar;
     private final JPanel peerListContainer = new ScrollableListPanel();
+    private JScrollPane peerListScroll;
     private final JLabel myNameLabel = new JLabel();
-    private final JLabel myIpLabel = new JLabel();
+    private final JLabel myStatusLabel = new JLabel();
     private JButton newGroupButton;
     private JButton renameButton;
-    private JTextField ipField;
-    private JButton connectButton;
 
     // Chat view
     private final JPanel messagesContainer = new ScrollableListPanel();
     private final JScrollPane messagesScroll;
-    private final JTextField inputField = new JTextField();
+    private final JTextArea inputField = createChatInputArea();
+    private JScrollPane inputScroll;
+    private UiComponents.RoundedPanel inputBox;
+    private int lastInputHeight = 30;
     private final JLabel messageCounter = new JLabel();
-    private final JButton attachButton = UiIcons.darkButton(
+    private final JButton attachButton = UiIcons.themedButton(
             null,
-            UiIcons.paperclip(Theme.TEXT_PRIMARY, 16),
-            Theme.BTN_DARK,
-            Theme.BTN_DARK_HOVER,
-            Theme.BTN_DARK_BORDER,
-            Theme.TEXT_PRIMARY,
-            8
+            UiIcons.paperclip(() -> Theme.TEXT_PRIMARY, 16),
+            () -> Theme.BTN_DARK,
+            () -> Theme.BTN_DARK_HOVER,
+            () -> Theme.BTN_DARK_BORDER,
+            () -> Theme.TEXT_PRIMARY,
+            9
     );
+    private JButton sendButton;
+    private Icon sendIconNormal;
+    private Icon saveEditIcon;
+    private JPanel editBanner;
+    private JPanel editAccentBar;
+    private JLabel editTitleLabel;
+    private JLabel editPreviewLabel;
+    private JButton cancelEditButton;
+    private ChatMessage editingMessage;
+    private ChatGroup editingTargetGroup;
+    private Peer editingTargetPeer;
+    private String draftBeforeEdit;
     private final JPanel attachmentStrip = new JPanel();
     private final JLabel dropBanner = new JLabel("", SwingConstants.CENTER);
     private final List<PendingAttachment> pendingAttachments = new ArrayList<>();
@@ -177,20 +208,29 @@ public class ChatPopupWindow extends JDialog {
     private int lastMessagesViewportWidth = -1;
 
     // Settings view
+    private JPanel settingsPanel;
+    private JScrollPane settingsScroll;
     private final JTextField displayNameField = new JTextField();
-    private final JCheckBox keepMessagesCheck = new JCheckBox();
-    private final JCheckBox notificationsCheck = new JCheckBox();
-    private final JCheckBox alwaysOnTopCheck = new JCheckBox();
-    private final JRadioButton germanRadio = new JRadioButton("Deutsch");
-    private final JRadioButton englishRadio = new JRadioButton("English");
+    private final JCheckBox autoDownloadImagesCheck = new UiComponents.ToggleSwitch();
+    private final JCheckBox keepMessagesCheck = new UiComponents.ToggleSwitch();
+    private final JCheckBox notificationsCheck = new UiComponents.ToggleSwitch();
+    private final JCheckBox alwaysOnTopCheck = new UiComponents.ToggleSwitch();
+    private final JRadioButton germanRadio = new UiComponents.ThemedRadioButton("Deutsch");
+    private final JRadioButton englishRadio = new UiComponents.ThemedRadioButton("English");
     private final JLabel settingsStatus = new JLabel(" ");
+    private JLabel themeSectionLabel;
+    private JLabel presetsHintLabel;
     private JLabel messagesSectionLabel;
+    private JLabel autoDownloadImagesHintLabel;
     private JLabel keepMessagesHintLabel;
-    private JLabel notificationsSectionLabel;
+    private JLabel windowSectionLabel;
     private JLabel nameSectionLabel;
     private JLabel languageSectionLabel;
     private JLabel storageLabel;
     private JButton saveNameButton;
+    private JButton resetColorsButton;
+    private final List<ColorSwatchControl> colorSwatches = new ArrayList<>();
+    private final List<PresetChipButton> presetButtons = new ArrayList<>();
     private Timer settingsStatusTimer;
 
     // State
@@ -205,6 +245,7 @@ public class ChatPopupWindow extends JDialog {
     private String currentCard = CARD_PEERS;
     private Consumer<String> nameChangeListener = name -> {};
     private Runnable languageChangeListener = () -> {};
+    private Runnable themeChangeListener = () -> {};
 
     public ChatPopupWindow(PeerNetwork network, AppSettings settings) {
         this.network = network;
@@ -212,6 +253,19 @@ public class ChatPopupWindow extends JDialog {
         this.historyStore = new ChatHistoryStore(settings.getHistoryFile());
         this.historySaveTimer = new Timer(1200, e -> saveHistoryNow());
         this.historySaveTimer.setRepeats(false);
+
+        this.backButton = UiIcons.iconButton(
+                UiIcons.backArrow(() -> Theme.TEXT_PRIMARY, 16),
+                UiIcons.backArrow(() -> Theme.ACCENT_HOVER, 16),
+                28, 8);
+        this.membersButton = UiIcons.iconButton(
+                UiIcons.members(() -> Theme.TEXT_MUTED, 16),
+                UiIcons.members(() -> Theme.TEXT_PRIMARY, 16),
+                28, 8);
+        this.settingsButton = UiIcons.iconButton(
+                UiIcons.settings(() -> Theme.TEXT_MUTED, 15),
+                UiIcons.settings(() -> Theme.TEXT_PRIMARY, 15),
+                28, 8);
 
         setUndecorated(true);
         setAlwaysOnTop(settings.isAlwaysOnTop());
@@ -223,10 +277,7 @@ public class ChatPopupWindow extends JDialog {
         setSize(initW, initH);
         setDefaultCloseOperation(HIDE_ON_CLOSE);
 
-        JPanel root = new JPanel(new BorderLayout());
-        root.setBackground(Theme.BG_WINDOW);
-        root.setBorder(BorderFactory.createLineBorder(Theme.BORDER, 1));
-
+        root = new JPanel(new BorderLayout());
         root.add(buildHeader(), BorderLayout.NORTH);
 
         contentCards.setOpaque(false);
@@ -236,13 +287,10 @@ public class ChatPopupWindow extends JDialog {
         chatViewPanel.setOpaque(false);
 
         messagesContainer.setLayout(new BoxLayout(messagesContainer, BoxLayout.Y_AXIS));
-        messagesContainer.setBackground(Theme.BG_WINDOW);
         messagesContainer.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
 
         messagesScroll = new JScrollPane(messagesContainer);
-        messagesScroll.setBorder(null);
-        messagesScroll.getViewport().setBackground(Theme.BG_WINDOW);
-        messagesScroll.getVerticalScrollBar().setUnitIncrement(14);
+        UiComponents.styleScrollPane(messagesScroll, () -> Theme.BG_WINDOW);
         messagesScroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
         messagesScroll.getViewport().addComponentListener(new ComponentAdapter() {
             @Override
@@ -252,28 +300,24 @@ public class ChatPopupWindow extends JDialog {
         });
 
         dropBanner.setFont(Theme.FONT_BOLD);
-        dropBanner.setForeground(Theme.ACCENT);
-        dropBanner.setBackground(Theme.BG_CARD);
         dropBanner.setOpaque(true);
-        dropBanner.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createMatteBorder(0, 0, 1, 0, Theme.ACCENT),
-                BorderFactory.createEmptyBorder(7, 10, 7, 10)
-        ));
         dropBanner.setVisible(false);
 
         attachmentStrip.setLayout(new BoxLayout(attachmentStrip, BoxLayout.Y_AXIS));
-        attachmentStrip.setBackground(Theme.BG_HEADER);
-        attachmentStrip.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createMatteBorder(1, 0, 0, 0, Theme.BORDER),
-                BorderFactory.createEmptyBorder(6, 10, 4, 10)
-        ));
         attachmentStrip.setVisible(false);
 
+        editBanner = buildEditBanner();
         chatInputBar = buildInputBar();
+
+        JPanel southTop = new JPanel();
+        southTop.setLayout(new BoxLayout(southTop, BoxLayout.Y_AXIS));
+        southTop.setOpaque(false);
+        southTop.add(editBanner);
+        southTop.add(attachmentStrip);
 
         JPanel southPanel = new JPanel(new BorderLayout());
         southPanel.setOpaque(false);
-        southPanel.add(attachmentStrip, BorderLayout.NORTH);
+        southPanel.add(southTop, BorderLayout.NORTH);
         southPanel.add(chatInputBar, BorderLayout.SOUTH);
 
         chatViewPanel.add(dropBanner, BorderLayout.NORTH);
@@ -283,23 +327,30 @@ public class ChatPopupWindow extends JDialog {
 
         contentCards.add(chatViewPanel, CARD_CHAT);
 
-        JScrollPane settingsScroll = new JScrollPane(buildSettingsView());
-        settingsScroll.setBorder(null);
-        settingsScroll.getViewport().setBackground(Theme.BG_WINDOW);
-        settingsScroll.getVerticalScrollBar().setUnitIncrement(14);
+        settingsPanel = buildSettingsView();
+        settingsScroll = new JScrollPane(settingsPanel);
+        UiComponents.styleScrollPane(settingsScroll, () -> Theme.BG_WINDOW);
         settingsScroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
         contentCards.add(settingsScroll, CARD_SETTINGS);
+
         root.add(contentCards, BorderLayout.CENTER);
 
         setContentPane(root);
         WindowResizer.install(this, 16, MIN_WIDTH, MIN_HEIGHT, 44,
                 () -> settings.setWindowSize(getWidth(), getHeight()));
         centerOnScreen();
+        applyThemeColors(false);
         applyLanguageTexts();
         loadStoredHistory();
 
         root.registerKeyboardAction(
-                e -> setVisible(false),
+                e -> {
+                    if (editingMessage != null) {
+                        cancelEditingMessage(true);
+                    } else {
+                        setVisible(false);
+                    }
+                },
                 KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0),
                 JPanel.WHEN_IN_FOCUSED_WINDOW
         );
@@ -322,6 +373,10 @@ public class ChatPopupWindow extends JDialog {
         this.languageChangeListener = listener == null ? () -> {} : listener;
     }
 
+    public void setThemeChangeListener(Runnable listener) {
+        this.themeChangeListener = listener == null ? () -> {} : listener;
+    }
+
     public void setShortcutText(String shortcut) {
         shortcutLabel.setText(shortcut);
     }
@@ -335,9 +390,6 @@ public class ChatPopupWindow extends JDialog {
     }
 
     public void showWindow() {
-        myIpLabel.setText(I18n.t(I18n.Key.YOUR_IP,
-                network.getLocalIpAddress() + ":" + network.getMyPort()));
-
         if (CARD_CHAT.equals(currentCard)) {
             boolean cleared = false;
             if (activeGroup != null) {
@@ -352,14 +404,10 @@ public class ChatPopupWindow extends JDialog {
 
         boolean wasVisible = isVisible();
         if (!wasVisible) {
-            // Keep the position the user dragged the window to. Only recenter
-            // when the saved position is no longer on any connected screen.
             ensureOnScreen();
             setVisible(true);
         }
 
-        // Temporarily forcing the window on top is the reliable Windows way
-        // to actually raise and focus it. It is restored immediately.
         boolean forceTop = !settings.isAlwaysOnTop();
         if (forceTop) {
             setAlwaysOnTop(true);
@@ -383,6 +431,7 @@ public class ChatPopupWindow extends JDialog {
     }
 
     public void openChatWith(Peer peer) {
+        cancelEditingMessage(false);
         this.activePeer = peer;
         this.activeGroup = null;
         this.currentCard = CARD_CHAT;
@@ -413,6 +462,7 @@ public class ChatPopupWindow extends JDialog {
                 && !promptForGroupPassword(local)) {
             return;
         }
+        cancelEditingMessage(false);
         this.activeGroup = local;
         this.activePeer = null;
         this.currentCard = CARD_CHAT;
@@ -437,6 +487,7 @@ public class ChatPopupWindow extends JDialog {
     }
 
     private void showPeerSelector(boolean makeVisible) {
+        cancelEditingMessage(false);
         this.activePeer = null;
         this.activeGroup = null;
         this.currentCard = CARD_PEERS;
@@ -445,6 +496,7 @@ public class ChatPopupWindow extends JDialog {
         settingsButton.setVisible(true);
         headerTitle.setText("Aero");
         headerSubtitle.setText(I18n.t(I18n.Key.APP_SUBTITLE));
+        headerSubtitle.setForeground(Theme.TEXT_MUTED);
         renderPeerList();
         cardLayout.show(contentCards, CARD_PEERS);
         if (makeVisible) {
@@ -453,6 +505,7 @@ public class ChatPopupWindow extends JDialog {
     }
 
     public void showSettings() {
+        cancelEditingMessage(false);
         this.activePeer = null;
         this.activeGroup = null;
         this.currentCard = CARD_SETTINGS;
@@ -461,12 +514,20 @@ public class ChatPopupWindow extends JDialog {
         settingsButton.setVisible(false);
         headerTitle.setText(I18n.t(I18n.Key.SETTINGS_TITLE));
         headerSubtitle.setText(I18n.t(I18n.Key.SETTINGS_SUBTITLE));
+        headerSubtitle.setForeground(Theme.TEXT_MUTED);
         displayNameField.setText(network.getMyName());
+        autoDownloadImagesCheck.setSelected(settings.isAutoDownloadImages());
         keepMessagesCheck.setSelected(settings.isKeepMessages());
         notificationsCheck.setSelected(settings.isNotificationsEnabled());
         alwaysOnTopCheck.setSelected(settings.isAlwaysOnTop());
+        refreshThemeControlsState();
         settingsStatus.setText(" ");
         cardLayout.show(contentCards, CARD_SETTINGS);
+        SwingUtilities.invokeLater(() -> {
+            if (settingsScroll != null) {
+                settingsScroll.getVerticalScrollBar().setValue(0);
+            }
+        });
         showWindow();
     }
 
@@ -508,11 +569,9 @@ public class ChatPopupWindow extends JDialog {
     public void addIncomingMessage(Peer sender, ChatMessage message) {
         String key = peerKey(sender.getId());
         boolean wasEmpty = appendHistory(key, message);
+        autoDownloadImageIfEligible(message, null);
 
-        boolean viewing = CARD_CHAT.equals(currentCard)
-                && activePeer != null && activeGroup == null
-                && activePeer.getId().equals(sender.getId());
-        if (viewing) {
+        if (isViewingPeerConversation(sender.getId())) {
             if (wasEmpty) {
                 renderMessages();
             } else {
@@ -528,8 +587,6 @@ public class ChatPopupWindow extends JDialog {
 
     public ChatGroup addIncomingGroupMessage(Peer sender, ChatGroup incoming, ChatMessage message) {
         if (settings.isGroupDeleted(incoming.getId())) {
-            // The group was deleted here. Tell the sender so it disappears
-            // there too, and never let the old group reappear locally.
             notifySenderThatGroupWasDeleted(sender, incoming.getId());
             return null;
         }
@@ -561,10 +618,7 @@ public class ChatPopupWindow extends JDialog {
         String key = groupKey(local.getId());
         boolean wasEmpty = appendHistory(key, message);
 
-        boolean viewing = CARD_CHAT.equals(currentCard)
-                && activeGroup != null
-                && activeGroup.getId().equals(local.getId());
-        if (viewing) {
+        if (isViewingGroupConversation(local.getId())) {
             if (wasEmpty) {
                 renderMessages();
             } else {
@@ -606,11 +660,9 @@ public class ChatPopupWindow extends JDialog {
 
         String key = groupKey(local.getId());
         boolean wasEmpty = appendHistory(key, message);
+        autoDownloadImageIfEligible(message, local);
 
-        boolean viewing = CARD_CHAT.equals(currentCard)
-                && activeGroup != null
-                && activeGroup.getId().equals(local.getId());
-        if (viewing) {
+        if (isViewingGroupConversation(local.getId())) {
             if (wasEmpty) {
                 renderMessages();
             } else {
@@ -623,6 +675,56 @@ public class ChatPopupWindow extends JDialog {
             renderPeerList();
         }
         return local;
+    }
+
+    private void autoDownloadImageIfEligible(ChatMessage msg, ChatGroup group) {
+        if (msg == null || !msg.isIncoming() || !settings.isAutoDownloadImages()) {
+            return;
+        }
+        FileAttachment att = msg.getAttachment();
+        if (att == null || !att.isImage() || att.isEncryptedPendingUnlock()) {
+            return;
+        }
+        if (att.getFileSize() < 0 || att.getFileSize() >= AUTO_DOWNLOAD_IMAGE_MAX_BYTES) {
+            return;
+        }
+        if (att.getStatus() != FileAttachment.Status.AVAILABLE || !att.canDownloadFromPeer()) {
+            return;
+        }
+        if (att.getLocalPath() != null && Files.isRegularFile(att.getLocalPath())) {
+            return;
+        }
+        byte[] groupKey = null;
+        if (att.isEncryptedOffer()) {
+            ChatGroup resolved = group != null ? group
+                    : (att.getOfferGroupId() != null ? settings.getGroup(att.getOfferGroupId()) : null);
+            groupKey = resolved != null ? resolved.getPasswordKeyBytes() : null;
+            if (groupKey == null) {
+                return;
+            }
+        }
+        Path dest = resolveAutoDownloadPath(att);
+        if (dest == null) {
+            return;
+        }
+        network.downloadOfferedFileAsync(att, dest, groupKey, outcome -> SwingUtilities.invokeLater(() -> {
+            if (outcome == PeerNetwork.DownloadOutcome.COMPLETED) {
+                scheduleHistorySave();
+                Runnable refresh = attachmentRefreshCallbacks.get(att);
+                if (refresh != null) {
+                    refresh.run();
+                }
+            }
+        }));
+    }
+
+    private Path resolveAutoDownloadPath(FileAttachment att) {
+        Path dir = settings.isKeepMessages() ? settings.getMediaDir() : network.getTransferDir();
+        if (dir == null) {
+            return null;
+        }
+        String safeName = FileAttachment.sanitizeFileName(att.getFileName());
+        return dir.resolve(att.getTransferId() + "-" + safeName);
     }
 
     public void handleRemoteMessageEdited(Peer sender, String messageId, String newText) {
@@ -801,10 +903,6 @@ public class ChatPopupWindow extends JDialog {
         return true;
     }
 
-    /**
-     * Restores saved conversations when the setting is enabled. Histories of
-     * groups that were deleted locally are ignored.
-     */
     private void loadStoredHistory() {
         if (!settings.isKeepMessages()) {
             return;
@@ -820,22 +918,16 @@ public class ChatPopupWindow extends JDialog {
             });
         }
 
-        // Password-protected groups that were already unlocked can show their
-        // decrypted text immediately, without asking for the password again.
         for (ChatGroup group : settings.getGroups()) {
             if (group.isPasswordProtected() && group.hasPasswordKey()) {
                 byte[] key = group.getPasswordKeyBytes();
                 if (key != null) {
-                    decryptStoredMessages(group, key);
+                    decryptStoredMessages(group, key, false);
                 }
             }
         }
     }
 
-    /**
-     * Writes the current histories immediately. Called on shutdown and after
-     * every change, debounced so fast message bursts only write once.
-     */
     public void saveHistoryNow() {
         historySaveTimer.stop();
         if (!settings.isKeepMessages()) {
@@ -858,11 +950,6 @@ public class ChatPopupWindow extends JDialog {
         }
     }
 
-    /**
-     * Adds a message to the in-memory history and persists it shortly after.
-     *
-     * @return {@code true} if this was the first message of the conversation
-     */
     private boolean appendHistory(String key, ChatMessage message) {
         boolean wasEmpty;
         synchronized (histories) {
@@ -882,31 +969,20 @@ public class ChatPopupWindow extends JDialog {
     }
 
     private JPanel buildHeader() {
-        JPanel header = new JPanel(new BorderLayout(8, 0));
-        header.setBackground(Theme.BG_HEADER);
-        header.setBorder(BorderFactory.createCompoundBorder(
+        headerPanel = new JPanel(new BorderLayout(8, 0));
+        headerPanel.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createMatteBorder(0, 0, 1, 0, Theme.BORDER),
-                BorderFactory.createEmptyBorder(7, 10, 7, 10)
+                BorderFactory.createEmptyBorder(8, 12, 8, 10)
         ));
 
         JPanel left = new JPanel(new BorderLayout(6, 0));
         left.setOpaque(false);
 
-        backButton.setFont(Theme.FONT_TITLE);
-        backButton.setForeground(Theme.TEXT_PRIMARY);
-        backButton.setContentAreaFilled(false);
-        backButton.setBorderPainted(false);
-        backButton.setFocusPainted(false);
-        backButton.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        backButton.setMargin(new Insets(0, 2, 0, 4));
         backButton.setVisible(false);
         backButton.addActionListener(e -> showPeerSelector());
 
         headerTitle.setFont(Theme.FONT_TITLE);
-        headerTitle.setForeground(Theme.TEXT_PRIMARY);
-
         headerSubtitle.setFont(Theme.FONT_SMALL);
-        headerSubtitle.setForeground(Theme.TEXT_MUTED);
 
         JPanel titles = new JPanel(new BorderLayout(0, 1));
         titles.setOpaque(false);
@@ -919,38 +995,16 @@ public class ChatPopupWindow extends JDialog {
         JPanel right = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
         right.setOpaque(false);
 
-        shortcutLabel.setFont(Theme.FONT_SMALL);
-        shortcutLabel.setForeground(Theme.TEXT_MUTED);
-
-        membersButton.setFont(new Font("Segoe UI Emoji", Font.PLAIN, 14));
-        membersButton.setForeground(Theme.TEXT_MUTED);
-        membersButton.setContentAreaFilled(false);
-        membersButton.setBorderPainted(false);
-        membersButton.setFocusPainted(false);
-        membersButton.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        membersButton.setMargin(new Insets(0, 2, 0, 2));
-        membersButton.setToolTipText(I18n.t(I18n.Key.VIEW_MEMBERS));
         membersButton.setVisible(false);
         membersButton.addActionListener(e -> showGroupMembers(activeGroup));
 
-        settingsButton.setFont(new Font("Segoe UI Symbol", Font.PLAIN, 14));
-        settingsButton.setForeground(Theme.TEXT_MUTED);
-        settingsButton.setContentAreaFilled(false);
-        settingsButton.setBorderPainted(false);
-        settingsButton.setFocusPainted(false);
-        settingsButton.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        settingsButton.setMargin(new Insets(0, 2, 0, 2));
-        settingsButton.setToolTipText(I18n.t(I18n.Key.SETTINGS_TOOLTIP));
         settingsButton.addActionListener(e -> showSettings());
 
-        JButton closeBtn = new JButton("×");
-        closeBtn.setFont(Theme.FONT_TITLE);
-        closeBtn.setForeground(Theme.TEXT_MUTED);
-        closeBtn.setContentAreaFilled(false);
-        closeBtn.setBorderPainted(false);
-        closeBtn.setFocusPainted(false);
-        closeBtn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        closeBtn.setMargin(new Insets(0, 4, 0, 4));
+        JButton closeBtn = UiIcons.iconButton(
+                UiIcons.cancel(() -> Theme.TEXT_MUTED, 13),
+                UiIcons.cancel(() -> Theme.TEXT_PRIMARY, 13),
+                28, 8);
+        closeBtn.setToolTipText(I18n.t(I18n.Key.CLOSE_TOOLTIP));
         closeBtn.addActionListener(e -> setVisible(false));
 
         right.add(shortcutLabel);
@@ -958,16 +1012,16 @@ public class ChatPopupWindow extends JDialog {
         right.add(settingsButton);
         right.add(closeBtn);
 
-        header.add(left, BorderLayout.CENTER);
-        header.add(right, BorderLayout.EAST);
+        headerPanel.add(left, BorderLayout.CENTER);
+        headerPanel.add(right, BorderLayout.EAST);
 
-        installDrag(header);
+        installDrag(headerPanel);
         installDrag(left);
         installDrag(titles);
         installDrag(headerTitle);
         installDrag(headerSubtitle);
 
-        return header;
+        return headerPanel;
     }
 
     private void installDrag(Component component) {
@@ -1013,109 +1067,173 @@ public class ChatPopupWindow extends JDialog {
     }
 
     private JPanel buildPeersView() {
-        JPanel panel = new JPanel(new BorderLayout());
-        panel.setOpaque(false);
+        peersViewPanel = new JPanel(new BorderLayout());
+        peersViewPanel.setOpaque(false);
 
-        // Top self bar
-        JPanel selfBar = new JPanel(new BorderLayout(4, 0));
-        selfBar.setOpaque(false);
-        selfBar.setBorder(BorderFactory.createEmptyBorder(9, 12, 5, 12));
+        JPanel selfBarWrap = new JPanel(new BorderLayout());
+        selfBarWrap.setOpaque(false);
+        selfBarWrap.setBorder(BorderFactory.createEmptyBorder(10, 12, 6, 12));
 
-        JPanel selfInfo = new JPanel(new BorderLayout(0, 2));
+        selfBarCard = new UiComponents.RoundedPanel(
+                new BorderLayout(10, 0), 12, () -> Theme.BG_CARD, () -> Theme.BORDER);
+        selfBarCard.setBorder(BorderFactory.createEmptyBorder(8, 10, 8, 10));
+
+        selfAvatar = new UiComponents.AvatarBadge(network.getMyName(), 32, true);
+
+        JPanel selfInfo = new JPanel(new BorderLayout(0, 1));
         selfInfo.setOpaque(false);
 
-        myNameLabel.setFont(Theme.FONT_SMALL);
-        myNameLabel.setForeground(Theme.TEXT_MUTED);
+        myNameLabel.setFont(Theme.FONT_BOLD);
         updateMyNameLabel();
 
-        myIpLabel.setFont(Theme.FONT_SMALL);
-        myIpLabel.setForeground(Theme.TEXT_MUTED);
-        myIpLabel.setText(I18n.t(I18n.Key.YOUR_IP,
-                network.getLocalIpAddress() + ":" + network.getMyPort()));
+        myStatusLabel.setFont(Theme.FONT_SMALL);
+        myStatusLabel.setText(I18n.t(I18n.Key.ONLINE));
 
         selfInfo.add(myNameLabel, BorderLayout.NORTH);
-        selfInfo.add(myIpLabel, BorderLayout.SOUTH);
+        selfInfo.add(myStatusLabel, BorderLayout.SOUTH);
 
-        JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 2, 0));
+        JPanel leftSelf = new JPanel(new BorderLayout(10, 0));
+        leftSelf.setOpaque(false);
+        leftSelf.add(selfAvatar, BorderLayout.WEST);
+        leftSelf.add(selfInfo, BorderLayout.CENTER);
+
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 2));
         actions.setOpaque(false);
 
-        newGroupButton = linkButton(I18n.t(I18n.Key.GROUP_BUTTON), this::createGroupDialog);
-        renameButton = linkButton(I18n.t(I18n.Key.RENAME_BUTTON), this::promptRename);
+        newGroupButton = UiIcons.themedButton(
+                I18n.t(I18n.Key.GROUP_BUTTON),
+                UiIcons.plus(() -> Theme.BTN_ACCENT_TEXT, 11),
+                () -> Theme.BTN_ACCENT,
+                () -> Theme.BTN_ACCENT_HOVER,
+                null,
+                () -> Theme.BTN_ACCENT_TEXT,
+                8);
+        newGroupButton.setBorder(BorderFactory.createEmptyBorder(5, 9, 5, 10));
+        newGroupButton.setIconTextGap(4);
+        newGroupButton.addActionListener(e -> createGroupDialog());
+
+        renameButton = UiIcons.themedButton(
+                null,
+                UiIcons.edit(() -> Theme.TEXT_PRIMARY, 13),
+                () -> Theme.BTN_DARK,
+                () -> Theme.BTN_DARK_HOVER,
+                () -> Theme.BTN_DARK_BORDER,
+                () -> Theme.TEXT_PRIMARY,
+                8);
+        renameButton.setPreferredSize(new Dimension(28, 26));
+        renameButton.setBorder(BorderFactory.createEmptyBorder());
+        renameButton.setToolTipText(I18n.t(I18n.Key.RENAME_BUTTON));
+        renameButton.addActionListener(e -> promptRename());
+
         actions.add(newGroupButton);
         actions.add(renameButton);
 
-        selfBar.add(selfInfo, BorderLayout.CENTER);
-        selfBar.add(actions, BorderLayout.EAST);
+        selfBarCard.add(leftSelf, BorderLayout.CENTER);
+        selfBarCard.add(actions, BorderLayout.EAST);
+        selfBarWrap.add(selfBarCard, BorderLayout.CENTER);
 
         peerListContainer.setLayout(new BoxLayout(peerListContainer, BoxLayout.Y_AXIS));
-        peerListContainer.setBackground(Theme.BG_WINDOW);
-        peerListContainer.setBorder(BorderFactory.createEmptyBorder(2, 12, 12, 12));
+        peerListContainer.setBorder(BorderFactory.createEmptyBorder(2, 12, 14, 12));
 
-        JScrollPane scroll = new JScrollPane(peerListContainer);
-        scroll.setBorder(null);
-        scroll.getViewport().setBackground(Theme.BG_WINDOW);
-        scroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+        peerListScroll = new JScrollPane(peerListContainer);
+        UiComponents.styleScrollPane(peerListScroll, () -> Theme.BG_WINDOW);
+        peerListScroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
 
-        // Manual IP connect bar at bottom of peer selector
-        JPanel connectBar = new JPanel(new BorderLayout(6, 0));
-        connectBar.setBackground(Theme.BG_HEADER);
-        connectBar.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createMatteBorder(1, 0, 0, 0, Theme.BORDER),
-                BorderFactory.createEmptyBorder(8, 10, 12, 18)
-        ));
-
-        ipField = new JTextField();
-        styleTextField(ipField);
-        ipField.setToolTipText(I18n.t(I18n.Key.IP_TOOLTIP));
-
-        connectButton = accentButton(I18n.t(I18n.Key.IP_CONNECT));
-        connectButton.setPreferredSize(new Dimension(92, 30));
-
-        Runnable doConnect = () -> {
-            String target = ipField.getText().trim();
-            if (target.isEmpty()) return;
-            connectButton.setEnabled(false);
-            connectButton.setText("...");
-            new Thread(() -> {
-                boolean ok = network.connectByIp(target);
-                SwingUtilities.invokeLater(() -> {
-                    connectButton.setEnabled(true);
-                    connectButton.setText(I18n.t(I18n.Key.IP_CONNECT));
-                    if (ok) {
-                        ipField.setText("");
-                    } else {
-                        JOptionPane.showMessageDialog(this,
-                                I18n.t(I18n.Key.IP_CONNECT_FAILED, target),
-                                I18n.t(I18n.Key.IP_CONNECT_FAILED_TITLE),
-                                JOptionPane.WARNING_MESSAGE);
-                    }
-                });
-            }, "aero-ip-connect").start();
-        };
-
-        ipField.addActionListener(e -> doConnect.run());
-        connectButton.addActionListener(e -> doConnect.run());
-
-        connectBar.add(ipField, BorderLayout.CENTER);
-        connectBar.add(connectButton, BorderLayout.EAST);
-
-        panel.add(selfBar, BorderLayout.NORTH);
-        panel.add(scroll, BorderLayout.CENTER);
-        panel.add(connectBar, BorderLayout.SOUTH);
+        peersViewPanel.add(selfBarWrap, BorderLayout.NORTH);
+        peersViewPanel.add(peerListScroll, BorderLayout.CENTER);
         renderPeerList();
-        return panel;
+        return peersViewPanel;
     }
 
     private JPanel buildSettingsView() {
         JPanel panel = new JPanel();
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
-        panel.setBackground(Theme.BG_WINDOW);
-        panel.setBorder(BorderFactory.createEmptyBorder(14, 16, 14, 16));
+        panel.setBorder(BorderFactory.createEmptyBorder(12, 14, 18, 14));
 
+        // 1. Design & Colors Card
+        themeSectionLabel = sectionLabel("");
+        panel.add(themeSectionLabel);
+
+        UiComponents.RoundedPanel themeCard = settingsCard();
+        presetsHintLabel = new JLabel();
+        presetsHintLabel.setFont(Theme.FONT_SMALL);
+        presetsHintLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
+        themeCard.add(presetsHintLabel);
+        themeCard.add(Box.createVerticalStrut(6));
+
+        JPanel presetsRow = new JPanel(new GridLayout(2, 3, 6, 6));
+        presetsRow.setOpaque(false);
+        presetsRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+        presetsRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, 58));
+        presetButtons.clear();
+        for (Theme.Preset preset : Theme.PRESETS) {
+            PresetChipButton btn = new PresetChipButton(preset);
+            presetButtons.add(btn);
+            presetsRow.add(btn);
+        }
+        themeCard.add(presetsRow);
+        themeCard.add(Box.createVerticalStrut(10));
+
+        colorSwatches.clear();
+        JPanel swatchesGrid = new JPanel(new GridLayout(2, 2, 8, 6));
+        swatchesGrid.setOpaque(false);
+        swatchesGrid.setAlignmentX(Component.LEFT_ALIGNMENT);
+        swatchesGrid.setMaximumSize(new Dimension(Integer.MAX_VALUE, 66));
+
+        ColorSwatchControl bgSwatch = new ColorSwatchControl(
+                I18n.Key.COLOR_BG,
+                () -> Theme.BG_WINDOW,
+                c -> applyCustomPalette(c, Theme.ACCENT, Theme.BUBBLE_OUT, Theme.BUBBLE_IN));
+        ColorSwatchControl accentSwatch = new ColorSwatchControl(
+                I18n.Key.COLOR_ACCENT,
+                () -> Theme.ACCENT,
+                c -> applyCustomPalette(Theme.BG_WINDOW, c, Theme.BUBBLE_OUT, Theme.BUBBLE_IN));
+        ColorSwatchControl outSwatch = new ColorSwatchControl(
+                I18n.Key.COLOR_BUBBLE_OUT,
+                () -> Theme.BUBBLE_OUT,
+                c -> applyCustomPalette(Theme.BG_WINDOW, Theme.ACCENT, c, Theme.BUBBLE_IN));
+        ColorSwatchControl inSwatch = new ColorSwatchControl(
+                I18n.Key.COLOR_BUBBLE_IN,
+                () -> Theme.BUBBLE_IN,
+                c -> applyCustomPalette(Theme.BG_WINDOW, Theme.ACCENT, Theme.BUBBLE_OUT, c));
+
+        colorSwatches.add(bgSwatch);
+        colorSwatches.add(accentSwatch);
+        colorSwatches.add(outSwatch);
+        colorSwatches.add(inSwatch);
+        swatchesGrid.add(bgSwatch);
+        swatchesGrid.add(accentSwatch);
+        swatchesGrid.add(outSwatch);
+        swatchesGrid.add(inSwatch);
+        themeCard.add(swatchesGrid);
+        themeCard.add(Box.createVerticalStrut(8));
+
+        resetColorsButton = secondaryButton("");
+        resetColorsButton.setAlignmentX(Component.LEFT_ALIGNMENT);
+        resetColorsButton.addActionListener(e -> applyCustomPalette(
+                Theme.DEFAULT_BG_WINDOW, Theme.DEFAULT_ACCENT,
+                Theme.DEFAULT_BUBBLE_OUT, Theme.DEFAULT_BUBBLE_IN));
+        themeCard.add(resetColorsButton);
+        panel.add(themeCard);
+        panel.add(Box.createVerticalStrut(12));
+
+        // 2. Messages & Media Card
         messagesSectionLabel = sectionLabel("");
         panel.add(messagesSectionLabel);
 
-        styleCheckBox(keepMessagesCheck);
+        UiComponents.RoundedPanel msgCard = settingsCard();
+        autoDownloadImagesCheck.setAlignmentX(Component.LEFT_ALIGNMENT);
+        autoDownloadImagesCheck.setSelected(settings.isAutoDownloadImages());
+        autoDownloadImagesCheck.addActionListener(e ->
+                settings.setAutoDownloadImages(autoDownloadImagesCheck.isSelected()));
+        msgCard.add(autoDownloadImagesCheck);
+
+        autoDownloadImagesHintLabel = new JLabel();
+        autoDownloadImagesHintLabel.setFont(Theme.FONT_SMALL);
+        autoDownloadImagesHintLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
+        autoDownloadImagesHintLabel.setBorder(BorderFactory.createEmptyBorder(0, 44, 6, 2));
+        msgCard.add(autoDownloadImagesHintLabel);
+
         keepMessagesCheck.setAlignmentX(Component.LEFT_ALIGNMENT);
         keepMessagesCheck.setSelected(settings.isKeepMessages());
         keepMessagesCheck.addActionListener(e -> {
@@ -1126,47 +1244,47 @@ public class ChatPopupWindow extends JDialog {
             } else {
                 historySaveTimer.stop();
                 historyStore.clear();
+                deleteDirectoryQuietly(settings.getMediaDir());
             }
         });
-        panel.add(keepMessagesCheck);
+        msgCard.add(keepMessagesCheck);
 
         keepMessagesHintLabel = new JLabel();
         keepMessagesHintLabel.setFont(Theme.FONT_SMALL);
-        keepMessagesHintLabel.setForeground(Theme.TEXT_MUTED);
         keepMessagesHintLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
-        keepMessagesHintLabel.setBorder(BorderFactory.createEmptyBorder(0, 2, 0, 2));
-        panel.add(keepMessagesHintLabel);
+        keepMessagesHintLabel.setBorder(BorderFactory.createEmptyBorder(0, 44, 0, 2));
+        msgCard.add(keepMessagesHintLabel);
+        panel.add(msgCard);
+        panel.add(Box.createVerticalStrut(12));
 
-        panel.add(Box.createVerticalStrut(14));
+        // 3. Window & Notifications Card
+        windowSectionLabel = sectionLabel("");
+        panel.add(windowSectionLabel);
 
-        notificationsSectionLabel = sectionLabel("");
-        panel.add(notificationsSectionLabel);
-
-        styleCheckBox(notificationsCheck);
+        UiComponents.RoundedPanel winCard = settingsCard();
         notificationsCheck.setAlignmentX(Component.LEFT_ALIGNMENT);
         notificationsCheck.setSelected(settings.isNotificationsEnabled());
         notificationsCheck.addActionListener(e ->
                 settings.setNotificationsEnabled(notificationsCheck.isSelected()));
-        panel.add(notificationsCheck);
+        winCard.add(notificationsCheck);
 
-        styleCheckBox(alwaysOnTopCheck);
         alwaysOnTopCheck.setAlignmentX(Component.LEFT_ALIGNMENT);
         alwaysOnTopCheck.setSelected(settings.isAlwaysOnTop());
         alwaysOnTopCheck.addActionListener(e -> {
             settings.setAlwaysOnTop(alwaysOnTopCheck.isSelected());
             setAlwaysOnTop(settings.isAlwaysOnTop());
         });
-        panel.add(alwaysOnTopCheck);
+        winCard.add(alwaysOnTopCheck);
+        panel.add(winCard);
+        panel.add(Box.createVerticalStrut(12));
 
-        panel.add(Box.createVerticalStrut(14));
-
+        // 4. Language Card
         languageSectionLabel = sectionLabel("");
         panel.add(languageSectionLabel);
 
+        UiComponents.RoundedPanel langCard = settingsCard();
         germanRadio.setText(I18n.Language.GERMAN.getDisplayName());
         englishRadio.setText(I18n.Language.ENGLISH.getDisplayName());
-        styleRadioButton(germanRadio);
-        styleRadioButton(englishRadio);
         ButtonGroup languageGroup = new ButtonGroup();
         languageGroup.add(germanRadio);
         languageGroup.add(englishRadio);
@@ -1175,64 +1293,268 @@ public class ChatPopupWindow extends JDialog {
         germanRadio.addActionListener(e -> changeLanguage(I18n.Language.GERMAN));
         englishRadio.addActionListener(e -> changeLanguage(I18n.Language.ENGLISH));
 
-        JPanel languageRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 12, 0));
+        JPanel languageRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 14, 0));
         languageRow.setOpaque(false);
         languageRow.setAlignmentX(Component.LEFT_ALIGNMENT);
-        languageRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, 30));
+        languageRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, 28));
         languageRow.add(germanRadio);
         languageRow.add(englishRadio);
-        panel.add(languageRow);
+        langCard.add(languageRow);
+        panel.add(langCard);
+        panel.add(Box.createVerticalStrut(12));
 
-        panel.add(Box.createVerticalStrut(14));
-
+        // 5. Display Name Card
         nameSectionLabel = sectionLabel("");
         panel.add(nameSectionLabel);
 
+        UiComponents.RoundedPanel nameCard = settingsCard();
         styleTextField(displayNameField);
         displayNameField.setText(network.getMyName());
         displayNameField.setMaximumSize(new Dimension(Integer.MAX_VALUE, 32));
         displayNameField.addActionListener(e -> saveDisplayNameFromSettings());
 
         saveNameButton = accentButton("");
-        saveNameButton.setPreferredSize(new Dimension(84, 30));
+        saveNameButton.setPreferredSize(new Dimension(88, 30));
         saveNameButton.addActionListener(e -> saveDisplayNameFromSettings());
 
-        JPanel nameRow = new JPanel(new BorderLayout(6, 0));
+        JPanel nameRow = new JPanel(new BorderLayout(8, 0));
         nameRow.setOpaque(false);
         nameRow.setAlignmentX(Component.LEFT_ALIGNMENT);
         nameRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, 32));
         nameRow.add(displayNameField, BorderLayout.CENTER);
         nameRow.add(saveNameButton, BorderLayout.EAST);
-        panel.add(nameRow);
+        nameCard.add(nameRow);
 
-        panel.add(Box.createVerticalStrut(6));
+        nameCard.add(Box.createVerticalStrut(4));
         settingsStatus.setFont(Theme.FONT_SMALL);
-        settingsStatus.setForeground(Theme.ONLINE_DOT);
         settingsStatus.setAlignmentX(Component.LEFT_ALIGNMENT);
-        panel.add(settingsStatus);
+        nameCard.add(settingsStatus);
+        panel.add(nameCard);
 
-        panel.add(Box.createVerticalStrut(16));
-
+        panel.add(Box.createVerticalStrut(10));
         storageLabel = new JLabel();
         storageLabel.setFont(Theme.FONT_SMALL);
-        storageLabel.setForeground(Theme.TEXT_MUTED);
         storageLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
+        storageLabel.setBorder(BorderFactory.createEmptyBorder(0, 2, 0, 2));
         panel.add(storageLabel);
 
         return panel;
     }
 
-    private void styleRadioButton(JRadioButton radio) {
-        radio.setOpaque(false);
-        radio.setForeground(Theme.TEXT_PRIMARY);
-        radio.setFont(Theme.FONT_BODY);
-        radio.setFocusPainted(false);
-        radio.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+    private static UiComponents.RoundedPanel settingsCard() {
+        UiComponents.RoundedPanel card = new UiComponents.RoundedPanel(
+                null, 12, () -> Theme.BG_CARD, () -> Theme.BORDER);
+        card.setLayout(new BoxLayout(card, BoxLayout.Y_AXIS));
+        card.setAlignmentX(Component.LEFT_ALIGNMENT);
+        card.setBorder(BorderFactory.createEmptyBorder(10, 12, 10, 12));
+        return card;
+    }
+
+    private void applyCustomPalette(Color bgWindow, Color accent, Color bubbleOut, Color bubbleIn) {
+        Theme.applyPalette(bgWindow, accent, bubbleOut, bubbleIn);
+        settings.setThemeColors(
+                Theme.toHex(Theme.BG_WINDOW),
+                Theme.toHex(Theme.ACCENT),
+                Theme.toHex(Theme.BUBBLE_OUT),
+                Theme.toHex(Theme.BUBBLE_IN));
+        applyThemeColors(true);
+        themeChangeListener.run();
+    }
+
+    private void applyThemeColors(boolean reRenderActiveLists) {
+        root.setBackground(Theme.BG_WINDOW);
+        root.setBorder(BorderFactory.createLineBorder(Theme.BORDER, 1));
+
+        if (headerPanel != null) {
+            headerPanel.setBackground(Theme.BG_HEADER);
+            headerPanel.setBorder(BorderFactory.createCompoundBorder(
+                    BorderFactory.createMatteBorder(0, 0, 1, 0, Theme.BORDER),
+                    BorderFactory.createEmptyBorder(8, 12, 8, 10)
+            ));
+        }
+        headerTitle.setForeground(Theme.TEXT_PRIMARY);
+        updateChatSubtitle();
+
+        peerListContainer.setBackground(Theme.BG_WINDOW);
+        if (peerListScroll != null) {
+            peerListScroll.getViewport().setBackground(Theme.BG_WINDOW);
+        }
+        myNameLabel.setForeground(Theme.TEXT_PRIMARY);
+        myStatusLabel.setForeground(Theme.ONLINE_DOT);
+
+        messagesContainer.setBackground(Theme.BG_WINDOW);
+        if (messagesScroll != null) {
+            messagesScroll.getViewport().setBackground(Theme.BG_WINDOW);
+        }
+
+        dropBanner.setForeground(Theme.ACCENT);
+        dropBanner.setBackground(Theme.BG_CARD);
+        dropBanner.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createMatteBorder(0, 0, 1, 0, Theme.ACCENT),
+                BorderFactory.createEmptyBorder(7, 10, 7, 10)
+        ));
+
+        if (editBanner != null) {
+            editBanner.setBackground(Theme.BG_HEADER);
+            editBanner.setBorder(BorderFactory.createCompoundBorder(
+                    BorderFactory.createMatteBorder(1, 0, 0, 0, Theme.BORDER),
+                    BorderFactory.createEmptyBorder(6, 12, 6, 12)
+            ));
+            editAccentBar.setBackground(Theme.ACCENT);
+            editTitleLabel.setForeground(Theme.isLight(Theme.BG_WINDOW) ? Theme.ACCENT : Theme.ACCENT_HOVER);
+            editPreviewLabel.setForeground(Theme.TEXT_MUTED);
+        }
+
+        attachmentStrip.setBackground(Theme.BG_HEADER);
+        attachmentStrip.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createMatteBorder(1, 0, 0, 0, Theme.BORDER),
+                BorderFactory.createEmptyBorder(6, 10, 4, 10)
+        ));
+
+        if (chatInputBar != null) {
+            chatInputBar.setBackground(Theme.BG_HEADER);
+            chatInputBar.setBorder(BorderFactory.createCompoundBorder(
+                    BorderFactory.createMatteBorder(1, 0, 0, 0, Theme.BORDER),
+                    BorderFactory.createEmptyBorder(8, 10, 12, 18)
+            ));
+        }
+        inputField.setBackground(Theme.BG_INPUT);
+        inputField.setForeground(Theme.TEXT_PRIMARY);
+        inputField.setCaretColor(Theme.TEXT_PRIMARY);
+        inputField.setSelectionColor(Theme.withAlpha(Theme.ACCENT, 120));
+        inputField.setSelectedTextColor(Theme.TEXT_PRIMARY);
+        if (inputScroll != null) {
+            inputScroll.getViewport().setBackground(Theme.BG_INPUT);
+        }
+
+        if (settingsPanel != null) {
+            settingsPanel.setBackground(Theme.BG_WINDOW);
+            if (settingsScroll != null) {
+                settingsScroll.getViewport().setBackground(Theme.BG_WINDOW);
+            }
+            themeSectionLabel.setForeground(Theme.TEXT_MUTED);
+            presetsHintLabel.setForeground(Theme.TEXT_MUTED);
+            messagesSectionLabel.setForeground(Theme.TEXT_MUTED);
+            autoDownloadImagesHintLabel.setForeground(Theme.TEXT_MUTED);
+            keepMessagesHintLabel.setForeground(Theme.TEXT_MUTED);
+            windowSectionLabel.setForeground(Theme.TEXT_MUTED);
+            languageSectionLabel.setForeground(Theme.TEXT_MUTED);
+            nameSectionLabel.setForeground(Theme.TEXT_MUTED);
+            storageLabel.setForeground(Theme.TEXT_MUTED);
+            settingsStatus.setForeground(Theme.ONLINE_DOT);
+            styleTextField(displayNameField);
+        }
+
+        refreshThemeControlsState();
+        updateMessageCounter();
+        refreshEditingHighlights();
+
+        if (reRenderActiveLists) {
+            inlineImageCache.clear();
+            renderAttachmentStrip();
+            renderPeerList();
+            if (CARD_CHAT.equals(currentCard)) {
+                renderMessages();
+            }
+        }
+        repaint();
+    }
+
+    private void refreshThemeControlsState() {
+        for (PresetChipButton btn : presetButtons) {
+            btn.refresh();
+        }
+        for (ColorSwatchControl sw : colorSwatches) {
+            sw.refresh();
+        }
+    }
+
+    private JTextArea createChatInputArea() {
+        JTextArea area = new JTextArea() {
+            @Override
+            protected void paintComponent(Graphics g) {
+                super.paintComponent(g);
+                if (getText().isEmpty()) {
+                    Graphics2D g2 = (Graphics2D) g.create();
+                    g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+                    g2.setColor(Theme.TEXT_MUTED);
+                    g2.setFont(getFont());
+                    Insets ins = getInsets();
+                    FontMetrics fm = g2.getFontMetrics();
+                    g2.drawString(I18n.t(I18n.Key.CHAT_INPUT_PLACEHOLDER), ins.left, ins.top + fm.getAscent());
+                    g2.dispose();
+                }
+            }
+        };
+        area.setRows(1);
+        area.setLineWrap(true);
+        area.setWrapStyleWord(true);
+        area.setFont(Theme.FONT_BODY);
+        area.setBorder(BorderFactory.createEmptyBorder(4, 2, 4, 2));
+        return area;
+    }
+
+    private JPanel buildEditBanner() {
+        JPanel banner = new JPanel(new BorderLayout(8, 0)) {
+            @Override
+            public Dimension getMaximumSize() {
+                return new Dimension(Integer.MAX_VALUE, getPreferredSize().height);
+            }
+        };
+        banner.setAlignmentX(Component.LEFT_ALIGNMENT);
+        banner.setOpaque(true);
+        banner.setBackground(Theme.BG_HEADER);
+        banner.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createMatteBorder(1, 0, 0, 0, Theme.BORDER),
+                BorderFactory.createEmptyBorder(6, 12, 6, 12)
+        ));
+
+        editAccentBar = new JPanel();
+        editAccentBar.setBackground(Theme.ACCENT);
+        editAccentBar.setPreferredSize(new Dimension(3, 28));
+
+        JPanel info = new JPanel();
+        info.setLayout(new BoxLayout(info, BoxLayout.Y_AXIS));
+        info.setOpaque(false);
+
+        editTitleLabel = new JLabel(I18n.t(I18n.Key.EDIT_MESSAGE_TITLE));
+        editTitleLabel.setIcon(UiIcons.edit(
+                () -> Theme.isLight(Theme.BG_WINDOW) ? Theme.ACCENT : Theme.ACCENT_HOVER, 11));
+        editTitleLabel.setIconTextGap(5);
+        editTitleLabel.setFont(Theme.FONT_SMALL.deriveFont(Font.BOLD));
+        editTitleLabel.setForeground(Theme.isLight(Theme.BG_WINDOW) ? Theme.ACCENT : Theme.ACCENT_HOVER);
+
+        editPreviewLabel = new JLabel(" ");
+        editPreviewLabel.setFont(Theme.FONT_SMALL);
+        editPreviewLabel.setForeground(Theme.TEXT_MUTED);
+
+        info.add(editTitleLabel);
+        info.add(editPreviewLabel);
+
+        cancelEditButton = UiIcons.iconButton(
+                UiIcons.cancel(() -> Theme.TEXT_MUTED, 12),
+                UiIcons.cancel(() -> Theme.TEXT_PRIMARY, 12),
+                22, 6);
+        cancelEditButton.setToolTipText(I18n.t(I18n.Key.CANCEL));
+        cancelEditButton.addActionListener(e -> cancelEditingMessage(true));
+
+        JPanel left = new JPanel(new BorderLayout(8, 0));
+        left.setOpaque(false);
+        left.add(editAccentBar, BorderLayout.WEST);
+        left.add(info, BorderLayout.CENTER);
+
+        JPanel right = new JPanel(new GridBagLayout());
+        right.setOpaque(false);
+        right.add(cancelEditButton);
+
+        banner.add(left, BorderLayout.CENTER);
+        banner.add(right, BorderLayout.EAST);
+        banner.setVisible(false);
+        return banner;
     }
 
     private JPanel buildInputBar() {
         JPanel bar = new JPanel(new BorderLayout(6, 0));
-        bar.setBackground(Theme.BG_HEADER);
         bar.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createMatteBorder(1, 0, 0, 0, Theme.BORDER),
                 BorderFactory.createEmptyBorder(8, 10, 12, 18)
@@ -1244,63 +1566,131 @@ public class ChatPopupWindow extends JDialog {
         attachButton.setToolTipText(I18n.t(I18n.Key.ATTACH_FILE_TOOLTIP));
         attachButton.addActionListener(e -> promptSelectFiles());
 
-        styleTextField(inputField);
-        inputField.setFont(Theme.FONT_BODY);
-        inputField.addActionListener(e -> sendCurrentMessage());
         installLengthLimit(inputField, ChatMessage.MAX_TEXT_LENGTH);
         installInputPasteHandler();
+        inputField.setToolTipText(I18n.t(I18n.Key.CHAT_INPUT_TOOLTIP));
+        inputField.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), "aero-send-msg");
+        inputField.getActionMap().put("aero-send-msg", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                sendCurrentMessage();
+            }
+        });
+        inputField.getInputMap().put(
+                KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, InputEvent.SHIFT_DOWN_MASK),
+                "aero-input-newline");
+        inputField.getActionMap().put("aero-input-newline", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                inputField.replaceSelection("\n");
+            }
+        });
         inputField.getDocument().addDocumentListener(new DocumentListener() {
             @Override
             public void insertUpdate(DocumentEvent e) {
-                updateMessageCounter();
+                onInputChanged();
             }
 
             @Override
             public void removeUpdate(DocumentEvent e) {
-                updateMessageCounter();
+                onInputChanged();
             }
 
             @Override
             public void changedUpdate(DocumentEvent e) {
-                updateMessageCounter();
+                onInputChanged();
             }
         });
 
-        JButton sendBtn = accentButton("➤");
-        sendBtn.setFont(Theme.FONT_TITLE);
-        sendBtn.setPreferredSize(new Dimension(42, 32));
-        sendBtn.setBorder(BorderFactory.createEmptyBorder(2, 6, 2, 6));
-        sendBtn.addActionListener(e -> sendCurrentMessage());
+        inputScroll = new JScrollPane(inputField);
+        UiComponents.styleScrollPane(inputScroll, () -> Theme.BG_INPUT);
+        inputScroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+        inputScroll.setPreferredSize(new Dimension(120, 28));
 
         messageCounter.setFont(Theme.FONT_SMALL);
-        messageCounter.setForeground(Theme.TEXT_MUTED);
         messageCounter.setHorizontalAlignment(SwingConstants.RIGHT);
-        messageCounter.setText(ChatMessage.MAX_TEXT_LENGTH + "/" + ChatMessage.MAX_TEXT_LENGTH);
-        Dimension counterSize = messageCounter.getPreferredSize();
-        messageCounter.setPreferredSize(new Dimension(counterSize.width, counterSize.height));
         messageCounter.setToolTipText(I18n.t(I18n.Key.MESSAGE_LIMIT_TOOLTIP,
                 ChatMessage.MAX_TEXT_LENGTH));
+
+        inputBox = new UiComponents.RoundedPanel(
+                new BorderLayout(4, 0), 10, () -> Theme.BG_INPUT, () -> Theme.BORDER);
+        inputBox.setBorder(BorderFactory.createEmptyBorder(2, 8, 2, 6));
+        inputBox.add(inputScroll, BorderLayout.CENTER);
+        inputBox.add(messageCounter, BorderLayout.EAST);
+
+        sendIconNormal = UiIcons.send(() -> Theme.BTN_ACCENT_TEXT, 15);
+        saveEditIcon = UiIcons.check(() -> Theme.BTN_ACCENT_TEXT, 15);
+        sendButton = UiIcons.themedButton(
+                null,
+                sendIconNormal,
+                () -> Theme.BTN_ACCENT,
+                () -> Theme.BTN_ACCENT_HOVER,
+                null,
+                () -> Theme.BTN_ACCENT_TEXT,
+                9);
+        sendButton.setPreferredSize(new Dimension(34, 32));
+        sendButton.setBorder(BorderFactory.createEmptyBorder());
+        sendButton.addActionListener(e -> sendCurrentMessage());
+
+        JPanel leftWrap = new JPanel(new BorderLayout());
+        leftWrap.setOpaque(false);
+        leftWrap.add(attachButton, BorderLayout.SOUTH);
+
+        JPanel rightWrap = new JPanel(new BorderLayout());
+        rightWrap.setOpaque(false);
+        rightWrap.add(sendButton, BorderLayout.SOUTH);
+
+        bar.add(leftWrap, BorderLayout.WEST);
+        bar.add(inputBox, BorderLayout.CENTER);
+        bar.add(rightWrap, BorderLayout.EAST);
+
         updateMessageCounter();
-
-        JPanel right = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
-        right.setOpaque(false);
-        right.add(messageCounter);
-        right.add(sendBtn);
-
-        bar.add(attachButton, BorderLayout.WEST);
-        bar.add(inputField, BorderLayout.CENTER);
-        bar.add(right, BorderLayout.EAST);
         return bar;
+    }
+
+    private void onInputChanged() {
+        updateMessageCounter();
+        updateInputAreaHeight();
+    }
+
+    private void updateInputAreaHeight() {
+        if (inputScroll == null || chatInputBar == null) {
+            return;
+        }
+        SwingUtilities.invokeLater(() -> {
+            int width = inputScroll.getViewport().getWidth();
+            if (width > 10) {
+                inputField.setSize(new Dimension(width, 1000));
+            }
+            int prefH = inputField.getPreferredSize().height;
+            int targetH = Math.max(28, Math.min(82, prefH + 2));
+            if (targetH != lastInputHeight) {
+                lastInputHeight = targetH;
+                inputScroll.setPreferredSize(new Dimension(120, targetH));
+                chatInputBar.revalidate();
+                chatViewPanel.revalidate();
+            }
+        });
     }
 
     private void updateMessageCounter() {
         int length = inputField.getText().length();
-        messageCounter.setText(length + "/" + ChatMessage.MAX_TEXT_LENGTH);
-        messageCounter.setForeground(length >= ChatMessage.MAX_TEXT_LENGTH
-                ? Theme.DANGER : Theme.TEXT_MUTED);
+        if (length == 0) {
+            messageCounter.setText("");
+            messageCounter.setVisible(false);
+        } else {
+            messageCounter.setVisible(true);
+            messageCounter.setText(length + "/" + ChatMessage.MAX_TEXT_LENGTH);
+            messageCounter.setForeground(length >= ChatMessage.MAX_TEXT_LENGTH
+                    ? Theme.DANGER : Theme.TEXT_MUTED);
+        }
     }
 
     private void sendCurrentMessage() {
+        if (editingMessage != null) {
+            commitEditingMessage();
+            return;
+        }
         String text = inputField.getText().trim();
         if (text.isEmpty() && pendingAttachments.isEmpty()) return;
         if (text.length() > ChatMessage.MAX_TEXT_LENGTH) {
@@ -1472,6 +1862,8 @@ public class ChatPopupWindow extends JDialog {
         installDropSupport(southPanel);
         installDropSupport(attachmentStrip);
         installDropSupport(chatInputBar);
+        installDropSupport(inputBox);
+        installDropSupport(inputScroll);
         installDropSupport(attachButton);
         installDropSupport(inputField);
     }
@@ -1720,13 +2112,15 @@ public class ChatPopupWindow extends JDialog {
         String name = "screenshot-" + SCREENSHOT_TIME.format(LocalDateTime.now()) + ".png";
         new Thread(() -> {
             try {
-                Path dir = network.getTransferDir();
+                Path dir = settings.isKeepMessages()
+                        ? settings.getMediaDir()
+                        : network.getTransferDir();
                 Files.createDirectories(dir);
                 Path out = dir.resolve(UUID.randomUUID().toString().substring(0, 8) + "-" + name);
                 ImageIO.write(image, "png", out.toFile());
                 long size = Files.size(out);
                 ImageIcon thumb = createThumbIcon(out);
-                PendingAttachment pa = new PendingAttachment(out, name, size, true, thumb);
+                PendingAttachment pa = new PendingAttachment(out, name, size, true, thumb, true);
                 SwingUtilities.invokeLater(() -> {
                     pendingAttachments.add(pa);
                     renderAttachmentStrip();
@@ -1765,7 +2159,7 @@ public class ChatPopupWindow extends JDialog {
                         isImage = false;
                     }
                 }
-                staged.add(new PendingAttachment(path, name, size, isImage, thumb));
+                staged.add(new PendingAttachment(path, name, size, isImage, thumb, false));
             }
             SwingUtilities.invokeLater(() -> {
                 pendingAttachments.addAll(staged);
@@ -1797,17 +2191,14 @@ public class ChatPopupWindow extends JDialog {
             final int index = i;
             PendingAttachment pa = pendingAttachments.get(i);
 
-            JPanel item = new JPanel(new BorderLayout(8, 0));
-            item.setBackground(Theme.BG_CARD);
-            item.setBorder(BorderFactory.createCompoundBorder(
-                    BorderFactory.createLineBorder(Theme.BORDER, 1),
-                    BorderFactory.createEmptyBorder(4, 6, 4, 6)
-            ));
+            UiComponents.RoundedPanel item = new UiComponents.RoundedPanel(
+                    new BorderLayout(8, 0), 10, () -> Theme.BG_CARD, () -> Theme.BORDER);
+            item.setBorder(BorderFactory.createEmptyBorder(4, 6, 4, 6));
             item.setMaximumSize(new Dimension(Integer.MAX_VALUE, 44));
 
             JLabel iconLabel = new JLabel(pa.thumbnail != null
                     ? pa.thumbnail
-                    : UiIcons.fileBadge(Theme.TEXT_PRIMARY, 20));
+                    : UiIcons.fileBadge(() -> Theme.TEXT_PRIMARY, 20));
             iconLabel.setPreferredSize(new Dimension(34, 34));
             iconLabel.setHorizontalAlignment(JLabel.CENTER);
 
@@ -1822,13 +2213,13 @@ public class ChatPopupWindow extends JDialog {
             info.add(nameLabel, BorderLayout.NORTH);
             info.add(sizeLabel, BorderLayout.SOUTH);
 
-            JButton removeBtn = UiIcons.darkButton(
+            JButton removeBtn = UiIcons.themedButton(
                     null,
-                    UiIcons.cancel(Theme.TEXT_MUTED, 11),
-                    Theme.BTN_DARK,
-                    Theme.BTN_DANGER_HOVER,
-                    Theme.BTN_DARK_BORDER,
-                    Theme.TEXT_PRIMARY,
+                    UiIcons.cancel(() -> Theme.TEXT_MUTED, 11),
+                    () -> Theme.BTN_DARK,
+                    () -> Theme.BTN_DANGER_HOVER,
+                    () -> Theme.BTN_DARK_BORDER,
+                    () -> Theme.TEXT_PRIMARY,
                     6
             );
             removeBtn.setPreferredSize(new Dimension(22, 22));
@@ -1836,7 +2227,13 @@ public class ChatPopupWindow extends JDialog {
             removeBtn.setToolTipText(I18n.t(I18n.Key.REMOVE_ATTACHMENT_TOOLTIP));
             removeBtn.addActionListener(e -> {
                 if (index < pendingAttachments.size()) {
-                    pendingAttachments.remove(index);
+                    PendingAttachment removed = pendingAttachments.remove(index);
+                    if (removed.ownedTempFile && isManagedCacheFile(removed.file)) {
+                        try {
+                            Files.deleteIfExists(removed.file);
+                        } catch (IOException ignored) {
+                        }
+                    }
                     renderAttachmentStrip();
                 }
             });
@@ -1865,15 +2262,34 @@ public class ChatPopupWindow extends JDialog {
         groups.sort(Comparator.comparing(ChatGroup::getName, String.CASE_INSENSITIVE_ORDER));
 
         if (groups.isEmpty() && latestPeers.isEmpty()) {
-            JTextArea empty = new JTextArea(I18n.t(I18n.Key.EMPTY_PEERS));
-            empty.setEditable(false);
-            empty.setWrapStyleWord(true);
-            empty.setLineWrap(true);
-            empty.setOpaque(false);
-            empty.setFont(Theme.FONT_BODY);
-            empty.setForeground(Theme.TEXT_MUTED);
-            empty.setBorder(BorderFactory.createEmptyBorder(20, 8, 8, 8));
-            peerListContainer.add(empty);
+            JPanel emptyWrap = new JPanel(new GridBagLayout());
+            emptyWrap.setOpaque(false);
+
+            JPanel centerBox = new JPanel();
+            centerBox.setLayout(new BoxLayout(centerBox, BoxLayout.Y_AXIS));
+            centerBox.setOpaque(false);
+            centerBox.setBorder(BorderFactory.createEmptyBorder(36, 16, 20, 16));
+
+            JLabel icon = new JLabel(UiIcons.members(() -> Theme.TEXT_MUTED, 30));
+            icon.setAlignmentX(Component.CENTER_ALIGNMENT);
+
+            JLabel title = new JLabel(I18n.t(I18n.Key.EMPTY_PEERS_TITLE));
+            title.setFont(Theme.FONT_TITLE);
+            title.setForeground(Theme.TEXT_PRIMARY);
+            title.setAlignmentX(Component.CENTER_ALIGNMENT);
+
+            JLabel hint = new JLabel(I18n.t(I18n.Key.EMPTY_PEERS_HINT));
+            hint.setFont(Theme.FONT_SMALL);
+            hint.setForeground(Theme.TEXT_MUTED);
+            hint.setAlignmentX(Component.CENTER_ALIGNMENT);
+
+            centerBox.add(icon);
+            centerBox.add(Box.createVerticalStrut(8));
+            centerBox.add(title);
+            centerBox.add(Box.createVerticalStrut(3));
+            centerBox.add(hint);
+            emptyWrap.add(centerBox);
+            peerListContainer.add(emptyWrap);
         } else {
             if (!groups.isEmpty()) {
                 peerListContainer.add(sectionLabel(I18n.t(I18n.Key.GROUPS_SECTION)));
@@ -1884,7 +2300,7 @@ public class ChatPopupWindow extends JDialog {
             }
             if (!latestPeers.isEmpty()) {
                 if (!groups.isEmpty()) {
-                    peerListContainer.add(Box.createVerticalStrut(4));
+                    peerListContainer.add(Box.createVerticalStrut(6));
                 }
                 peerListContainer.add(sectionLabel(I18n.t(I18n.Key.ONLINE_SECTION)));
                 for (Peer peer : latestPeers) {
@@ -1899,33 +2315,43 @@ public class ChatPopupWindow extends JDialog {
     }
 
     private JPanel createPeerCard(Peer peer) {
-        JPanel card = new JPanel(new BorderLayout(8, 0));
-        card.setBackground(Theme.BG_CARD);
-        card.setMaximumSize(new Dimension(Integer.MAX_VALUE, 48));
-        card.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(Theme.BORDER, 1),
-                BorderFactory.createEmptyBorder(10, 12, 10, 12)
-        ));
+        boolean[] hovered = {false};
+        UiComponents.RoundedPanel card = new UiComponents.RoundedPanel(
+                new BorderLayout(10, 0), 12,
+                () -> hovered[0] ? Theme.BG_CARD_HOVER : Theme.BG_CARD,
+                () -> Theme.BORDER);
+        card.setMaximumSize(new Dimension(Integer.MAX_VALUE, 52));
+        card.setBorder(BorderFactory.createEmptyBorder(9, 12, 9, 12));
         card.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
 
-        JLabel dot = new JLabel("●");
-        dot.setForeground(Theme.ONLINE_DOT);
-        dot.setFont(Theme.FONT_SMALL);
+        UiComponents.AvatarBadge avatar = new UiComponents.AvatarBadge(peer.getName(), 32, true);
 
         JLabel name = new JLabel(peer.getName());
         name.setForeground(Theme.TEXT_PRIMARY);
         name.setFont(Theme.FONT_BOLD);
 
-        JPanel left = new JPanel(new BorderLayout(8, 0));
+        JLabel sub = new JLabel(I18n.t(I18n.Key.PEER_READY_SUBTITLE));
+        sub.setForeground(Theme.TEXT_MUTED);
+        sub.setFont(Theme.FONT_SMALL);
+
+        JPanel texts = new JPanel(new BorderLayout(0, 1));
+        texts.setOpaque(false);
+        texts.add(name, BorderLayout.NORTH);
+        texts.add(sub, BorderLayout.SOUTH);
+
+        JPanel left = new JPanel(new BorderLayout(10, 0));
         left.setOpaque(false);
-        left.add(dot, BorderLayout.WEST);
-        left.add(name, BorderLayout.CENTER);
+        left.add(avatar, BorderLayout.WEST);
+        left.add(texts, BorderLayout.CENTER);
 
         card.add(left, BorderLayout.CENTER);
 
         int unread = unreadCounts.getOrDefault(peerKey(peer.getId()), 0);
         if (unread > 0) {
-            card.add(createUnreadBadge(unread), BorderLayout.EAST);
+            JPanel badgeWrap = new JPanel(new GridBagLayout());
+            badgeWrap.setOpaque(false);
+            badgeWrap.add(createUnreadBadge(unread));
+            card.add(badgeWrap, BorderLayout.EAST);
         }
 
         card.addMouseListener(new MouseAdapter() {
@@ -1938,12 +2364,14 @@ public class ChatPopupWindow extends JDialog {
 
             @Override
             public void mouseEntered(MouseEvent e) {
-                card.setBackground(Theme.BG_CARD_HOVER);
+                hovered[0] = true;
+                card.repaint();
             }
 
             @Override
             public void mouseExited(MouseEvent e) {
-                card.setBackground(Theme.BG_CARD);
+                hovered[0] = false;
+                card.repaint();
             }
         });
 
@@ -1951,60 +2379,82 @@ public class ChatPopupWindow extends JDialog {
     }
 
     private JPanel createGroupCard(ChatGroup group) {
-        JPanel card = new JPanel(new BorderLayout(8, 0));
-        card.setBackground(Theme.BG_CARD);
+        boolean[] hovered = {false};
+        UiComponents.RoundedPanel card = new UiComponents.RoundedPanel(
+                new BorderLayout(10, 0), 12,
+                () -> hovered[0] ? Theme.BG_CARD_HOVER : Theme.BG_CARD,
+                () -> Theme.BORDER);
         card.setMaximumSize(new Dimension(Integer.MAX_VALUE, 56));
-        card.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(Theme.BORDER, 1),
-                BorderFactory.createEmptyBorder(8, 12, 8, 12)
-        ));
+        card.setBorder(BorderFactory.createEmptyBorder(9, 12, 9, 10));
         card.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
 
-        JLabel icon = new JLabel("▣");
-        icon.setForeground(Theme.ACCENT_HOVER);
-        icon.setFont(Theme.FONT_TITLE);
+        UiComponents.RoundedPanel iconBadge = new UiComponents.RoundedPanel(
+                new GridBagLayout(), 10,
+                () -> Theme.withAlpha(Theme.ACCENT, Theme.isLight(Theme.BG_WINDOW) ? 34 : 58),
+                () -> Theme.withAlpha(Theme.ACCENT, 110));
+        iconBadge.setPreferredSize(new Dimension(32, 32));
+        iconBadge.add(new JLabel(UiIcons.group(() -> Theme.ACCENT_HOVER, 16)));
 
+        JPanel nameRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        nameRow.setOpaque(false);
         JLabel name = new JLabel(group.getName());
         name.setForeground(Theme.TEXT_PRIMARY);
         name.setFont(Theme.FONT_BOLD);
+        nameRow.add(name);
+        if (group.isPasswordProtected()) {
+            nameRow.add(new JLabel(UiIcons.lock(() -> Theme.TEXT_MUTED, 11)));
+        }
 
-        JLabel info = new JLabel(memberStatus(group));
+        JLabel info = new JLabel(memberStatusShort(group));
         info.setForeground(Theme.TEXT_MUTED);
         info.setFont(Theme.FONT_SMALL);
 
         JPanel texts = new JPanel(new BorderLayout(0, 1));
         texts.setOpaque(false);
-        texts.add(name, BorderLayout.NORTH);
+        texts.add(nameRow, BorderLayout.NORTH);
         texts.add(info, BorderLayout.SOUTH);
 
-        JPanel left = new JPanel(new BorderLayout(8, 0));
+        JPanel left = new JPanel(new BorderLayout(10, 0));
         left.setOpaque(false);
-        left.add(icon, BorderLayout.WEST);
+        left.add(iconBadge, BorderLayout.WEST);
         left.add(texts, BorderLayout.CENTER);
 
         card.add(left, BorderLayout.CENTER);
 
+        JPanel right = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 2));
+        right.setOpaque(false);
+
         int unread = unreadCounts.getOrDefault(groupKey(group.getId()), 0);
         if (unread > 0) {
-            card.add(createUnreadBadge(unread), BorderLayout.EAST);
+            right.add(createUnreadBadge(unread));
         }
 
-        JPopupMenu popup = new JPopupMenu();
-        JMenuItem membersItem = new JMenuItem(I18n.t(I18n.Key.VIEW_MEMBERS));
-        membersItem.addActionListener(e -> showGroupMembers(group));
-        popup.add(membersItem);
-        popup.addSeparator();
-        JMenuItem deleteItem = new JMenuItem(I18n.t(I18n.Key.DELETE_GROUP_MENU));
-        deleteItem.addActionListener(e -> deleteGroup(group));
-        popup.add(deleteItem);
-        card.setComponentPopupMenu(popup);
-        left.setComponentPopupMenu(popup);
-        texts.setComponentPopupMenu(popup);
-        name.setComponentPopupMenu(popup);
-        info.setComponentPopupMenu(popup);
-        icon.setComponentPopupMenu(popup);
+        JButton groupOptsBtn = UiIcons.iconButton(
+                UiIcons.moreDots(() -> Theme.TEXT_MUTED, 14),
+                UiIcons.moreDots(() -> Theme.TEXT_PRIMARY, 14),
+                24, 7);
+        groupOptsBtn.setToolTipText(I18n.t(I18n.Key.GROUP_OPTIONS_TOOLTIP));
+        groupOptsBtn.addActionListener(e -> buildGroupPopupMenu(group)
+                .show(groupOptsBtn, 0, groupOptsBtn.getHeight()));
+        right.add(groupOptsBtn);
 
-        card.addMouseListener(new MouseAdapter() {
+        card.add(right, BorderLayout.EAST);
+
+        MouseAdapter groupMouse = new MouseAdapter() {
+            @Override
+            public void mousePressed(MouseEvent e) {
+                if (e.isPopupTrigger()) {
+                    buildGroupPopupMenu(group).show(e.getComponent(), e.getX(), e.getY());
+                }
+            }
+
+            @Override
+            public void mouseReleased(MouseEvent e) {
+                if (e.isPopupTrigger()) {
+                    buildGroupPopupMenu(group).show(e.getComponent(), e.getX(), e.getY());
+                }
+            }
+
             @Override
             public void mouseClicked(MouseEvent e) {
                 if (SwingUtilities.isLeftMouseButton(e)) {
@@ -2014,24 +2464,50 @@ public class ChatPopupWindow extends JDialog {
 
             @Override
             public void mouseEntered(MouseEvent e) {
-                card.setBackground(Theme.BG_CARD_HOVER);
+                hovered[0] = true;
+                card.repaint();
             }
 
             @Override
             public void mouseExited(MouseEvent e) {
-                card.setBackground(Theme.BG_CARD);
+                hovered[0] = false;
+                card.repaint();
             }
-        });
+        };
+        card.addMouseListener(groupMouse);
+        left.addMouseListener(groupMouse);
+        texts.addMouseListener(groupMouse);
+        nameRow.addMouseListener(groupMouse);
+        name.addMouseListener(groupMouse);
+        info.addMouseListener(groupMouse);
 
         return card;
     }
 
+    private JPopupMenu buildGroupPopupMenu(ChatGroup group) {
+        JPopupMenu popup = UiComponents.createPopupMenu();
+        JMenuItem membersItem = UiComponents.createMenuItem(
+                I18n.t(I18n.Key.VIEW_MEMBERS),
+                UiIcons.members(() -> Theme.TEXT_PRIMARY, 13),
+                null);
+        membersItem.addActionListener(e -> showGroupMembers(group));
+        popup.add(membersItem);
+        UiComponents.addPopupSeparator(popup);
+        JMenuItem deleteItem = UiComponents.createMenuItem(
+                I18n.t(I18n.Key.DELETE_GROUP_MENU),
+                UiIcons.trash(() -> Theme.DANGER, 13),
+                Theme.DANGER);
+        deleteItem.addActionListener(e -> deleteGroup(group));
+        popup.add(deleteItem);
+        return popup;
+    }
+
     private JLabel createUnreadBadge(int unread) {
-        JLabel badge = new JLabel(I18n.t(I18n.Key.UNREAD, unread));
-        badge.setOpaque(true);
-        badge.setBackground(Theme.ACCENT);
-        badge.setForeground(Color.WHITE);
-        badge.setFont(Theme.FONT_SMALL);
+        String text = unread > 99 ? "99+" : String.valueOf(unread);
+        UiComponents.PillLabel badge = new UiComponents.PillLabel(
+                text, 12, () -> Theme.ACCENT, () -> Theme.BTN_ACCENT_TEXT, null);
+        badge.setFont(Theme.FONT_SMALL.deriveFont(Font.BOLD));
+        badge.setBorder(BorderFactory.createEmptyBorder(2, 7, 2, 7));
         return badge;
     }
 
@@ -2058,8 +2534,11 @@ public class ChatPopupWindow extends JDialog {
             messagesContainer.add(createEmptyMessagesPlaceholder());
         } else {
             boolean showSender = activeGroup != null;
+            ChatMessage prev = null;
             for (ChatMessage message : messages) {
-                appendMessageBubble(message, showSender);
+                boolean sameBurst = isSameSenderBurst(prev, message);
+                appendMessageBubble(message, showSender && !sameBurst, sameBurst);
+                prev = message;
             }
         }
 
@@ -2069,7 +2548,25 @@ public class ChatPopupWindow extends JDialog {
         scrollToBottom();
     }
 
-    private JTextArea createEmptyMessagesPlaceholder() {
+    private static boolean isSameSenderBurst(ChatMessage prev, ChatMessage next) {
+        if (prev == null || next == null || prev.isIncoming() != next.isIncoming()) {
+            return false;
+        }
+        if (!prev.isIncoming()) {
+            return true;
+        }
+        String prevId = prev.getSenderId();
+        String nextId = next.getSenderId();
+        if (prevId != null && !prevId.isEmpty() && nextId != null && !nextId.isEmpty()) {
+            return prevId.equals(nextId);
+        }
+        return Objects.equals(prev.getSenderName(), next.getSenderName());
+    }
+
+    private JComponent createEmptyMessagesPlaceholder() {
+        JPanel wrap = new JPanel(new GridBagLayout());
+        wrap.setOpaque(false);
+
         JTextArea empty = new JTextArea(
                 I18n.t(activeGroup != null
                         ? I18n.Key.NO_MESSAGES_GROUP
@@ -2081,9 +2578,11 @@ public class ChatPopupWindow extends JDialog {
         empty.setOpaque(false);
         empty.setFont(Theme.FONT_BODY);
         empty.setForeground(Theme.TEXT_MUTED);
-        empty.setBorder(BorderFactory.createEmptyBorder(22, 8, 8, 8));
+        empty.setBorder(BorderFactory.createEmptyBorder(28, 12, 12, 12));
         installDropSupport(empty);
-        return empty;
+        installDropSupport(wrap);
+        wrap.add(empty);
+        return wrap;
     }
 
     private String activeConversationKey() {
@@ -2102,7 +2601,8 @@ public class ChatPopupWindow extends JDialog {
             viewportW = Math.max(MIN_WIDTH, getWidth()) - 20;
         }
         int availableRowW = Math.max(160, viewportW - 20);
-        int maxBubbleW = (int) Math.round(availableRowW * 0.80);
+        // Reserve 52px for the side action buttons (edit + menu) so rows never wrap or clip.
+        int maxBubbleW = Math.min(availableRowW - 52, (int) Math.round(availableRowW * 0.78));
         return Math.max(120, maxBubbleW - 24);
     }
 
@@ -2129,7 +2629,17 @@ public class ChatPopupWindow extends JDialog {
     }
 
     private void appendMessageBubble(ChatMessage msg, boolean showSender) {
-        MessageRow row = new MessageRow(msg, showSender, currentMaxBubbleTextWidth());
+        ChatMessage prev = null;
+        int count = messagesContainer.getComponentCount();
+        if (count > 0 && messagesContainer.getComponent(count - 1) instanceof MessageRow prevRow) {
+            prev = prevRow.msg;
+        }
+        boolean sameBurst = isSameSenderBurst(prev, msg);
+        appendMessageBubble(msg, showSender && !sameBurst, sameBurst);
+    }
+
+    private void appendMessageBubble(ChatMessage msg, boolean showSenderHeader, boolean compactTop) {
+        MessageRow row = new MessageRow(msg, showSenderHeader, compactTop, currentMaxBubbleTextWidth());
         messagesContainer.add(row);
         messagesContainer.revalidate();
     }
@@ -2139,7 +2649,8 @@ public class ChatPopupWindow extends JDialog {
         for (Component comp : messagesContainer.getComponents()) {
             if (comp instanceof MessageRow row && row.msg == msg) {
                 row.updateTextAndMeta(maxTextW);
-                messagesContainer.revalidate();
+                messagesContainer.invalidate();
+                messagesScroll.validate();
                 messagesContainer.repaint();
                 return;
             }
@@ -2163,21 +2674,35 @@ public class ChatPopupWindow extends JDialog {
         for (Component comp : messagesContainer.getComponents()) {
             if (comp instanceof MessageRow row && row.msg == msg) {
                 messagesContainer.remove(row);
-                messagesContainer.revalidate();
+                refreshBurstHeaders();
+                messagesContainer.invalidate();
+                messagesScroll.validate();
                 messagesContainer.repaint();
                 return;
             }
         }
     }
 
-    private JTextArea createSelectableBubbleText(String content, int maxTextWidth, MessageRow row) {
+    private void refreshBurstHeaders() {
+        boolean showSender = activeGroup != null;
+        ChatMessage prev = null;
+        for (Component comp : messagesContainer.getComponents()) {
+            if (comp instanceof MessageRow row) {
+                boolean sameBurst = isSameSenderBurst(prev, row.msg);
+                row.updateBurstGrouping(showSender && !sameBurst, sameBurst);
+                prev = row.msg;
+            }
+        }
+    }
+
+    private JTextArea createSelectableBubbleText(String content, boolean incoming, int maxTextWidth, MessageRow row) {
         JTextArea text = new JTextArea(content);
         text.setEditable(false);
         text.setWrapStyleWord(true);
         text.setLineWrap(true);
         text.setOpaque(false);
-        text.setForeground(Theme.TEXT_PRIMARY);
-        text.setSelectionColor(new Color(255, 255, 255, 80));
+        text.setForeground(incoming ? Theme.BUBBLE_IN_TEXT : Theme.BUBBLE_OUT_TEXT);
+        text.setSelectionColor(new Color(255, 255, 255, 85));
         text.setSelectedTextColor(Color.WHITE);
         text.setFont(Theme.FONT_BODY);
         applyBubbleTextWidth(text, maxTextWidth);
@@ -2249,10 +2774,13 @@ public class ChatPopupWindow extends JDialog {
         boolean hasSelected = selectedText != null && !selectedText.isEmpty();
         boolean hasText = fullText != null && !fullText.isEmpty() && !pendingUnlock;
 
-        JPopupMenu menu = new JPopupMenu();
+        JPopupMenu menu = UiComponents.createPopupMenu();
 
         if (hasSelected || hasText) {
-            JMenuItem copyItem = new JMenuItem(I18n.t(I18n.Key.COPY_TEXT));
+            JMenuItem copyItem = UiComponents.createMenuItem(
+                    I18n.t(I18n.Key.COPY_TEXT),
+                    UiIcons.copy(() -> Theme.TEXT_PRIMARY, 13),
+                    null);
             copyItem.addActionListener(e -> copyTextToClipboard(hasSelected ? selectedText : fullText));
             menu.add(copyItem);
         }
@@ -2263,29 +2791,40 @@ public class ChatPopupWindow extends JDialog {
                     && (!msg.isIncoming() || att.getStatus() == FileAttachment.Status.COMPLETED);
             boolean canDownload = hasLocalFile || att.canDownloadFromPeer();
             if (att.isImage() && hasLocalFile) {
-                JMenuItem copyImg = new JMenuItem(I18n.t(I18n.Key.COPY_IMAGE));
+                JMenuItem copyImg = UiComponents.createMenuItem(
+                        I18n.t(I18n.Key.COPY_IMAGE),
+                        UiIcons.copy(() -> Theme.TEXT_PRIMARY, 13),
+                        null);
                 copyImg.addActionListener(e -> UiIcons.copyImageToClipboard(att.getLocalPath()));
                 menu.add(copyImg);
             }
             if (canDownload) {
-                JMenuItem saveItem = new JMenuItem(I18n.t(I18n.Key.DOWNLOAD_TOOLTIP));
+                JMenuItem saveItem = UiComponents.createMenuItem(
+                        I18n.t(I18n.Key.DOWNLOAD_TOOLTIP),
+                        UiIcons.download(() -> Theme.TEXT_PRIMARY, 13),
+                        null);
                 saveItem.addActionListener(e -> downloadAttachment(att));
                 menu.add(saveItem);
             }
         }
 
         if (!msg.isIncoming() && !pendingUnlock) {
-            JMenuItem editItem = new JMenuItem(I18n.t(I18n.Key.EDIT_MESSAGE));
+            JMenuItem editItem = UiComponents.createMenuItem(
+                    I18n.t(I18n.Key.EDIT_MESSAGE),
+                    UiIcons.edit(() -> Theme.TEXT_PRIMARY, 13),
+                    null);
             editItem.addActionListener(e -> promptEditMessage(msg));
             menu.add(editItem);
         }
 
         if (menu.getComponentCount() > 0) {
-            menu.addSeparator();
+            UiComponents.addPopupSeparator(menu);
         }
 
-        JMenuItem deleteItem = new JMenuItem(I18n.t(I18n.Key.DELETE_MESSAGE));
-        deleteItem.setForeground(Theme.DANGER);
+        JMenuItem deleteItem = UiComponents.createMenuItem(
+                I18n.t(I18n.Key.DELETE_MESSAGE),
+                UiIcons.trash(() -> Theme.DANGER, 13),
+                Theme.DANGER);
         deleteItem.addActionListener(e -> confirmAndDeleteMessage(msg));
         menu.add(deleteItem);
         return menu;
@@ -2303,6 +2842,10 @@ public class ChatPopupWindow extends JDialog {
     }
 
     private void promptEditMessage(ChatMessage msg) {
+        beginEditingMessage(msg);
+    }
+
+    private void beginEditingMessage(ChatMessage msg) {
         if (msg == null || msg.isIncoming()) {
             return;
         }
@@ -2310,121 +2853,119 @@ public class ChatPopupWindow extends JDialog {
         if (att != null && att.isEncryptedPendingUnlock()) {
             return;
         }
-
-        final String convKey = activeConversationKey();
-        final ChatGroup targetGroup = activeGroup;
-        final Peer targetPeer = activePeer;
-        if (convKey == null) {
+        if (activeConversationKey() == null) {
             return;
         }
 
-        JPanel body = new JPanel();
-        body.setLayout(new BoxLayout(body, BoxLayout.Y_AXIS));
-        body.setBackground(Theme.BG_WINDOW);
-        body.setBorder(BorderFactory.createEmptyBorder(12, 16, 8, 16));
+        if (this.editingMessage == null) {
+            this.draftBeforeEdit = inputField.getText();
+        }
+        this.editingMessage = msg;
+        this.editingTargetGroup = activeGroup;
+        this.editingTargetPeer = activePeer;
 
-        JTextArea editArea = new JTextArea(msg.getText());
-        editArea.setLineWrap(true);
-        editArea.setWrapStyleWord(true);
-        editArea.setBackground(Theme.BG_INPUT);
-        editArea.setForeground(Theme.TEXT_PRIMARY);
-        editArea.setCaretColor(Theme.TEXT_PRIMARY);
-        editArea.setFont(Theme.FONT_BODY);
-        editArea.setBorder(BorderFactory.createEmptyBorder(8, 10, 8, 10));
-        installLengthLimit(editArea, ChatMessage.MAX_TEXT_LENGTH);
-        editArea.setCaretPosition(editArea.getDocument().getLength());
+        String raw = msg.getText() != null ? msg.getText().replaceAll("\\s+", " ").trim() : "";
+        if (raw.isEmpty() && att != null) {
+            raw = att.getFileName();
+        }
+        editTitleLabel.setText(I18n.t(I18n.Key.EDIT_MESSAGE_TITLE));
+        editPreviewLabel.setText(truncateFileName(raw, 48));
+        editBanner.setVisible(true);
 
-        JScrollPane editScroll = new JScrollPane(editArea);
-        editScroll.setBorder(BorderFactory.createLineBorder(Theme.BORDER, 1));
-        editScroll.getViewport().setBackground(Theme.BG_INPUT);
-        editScroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
-        editScroll.getVerticalScrollBar().setUnitIncrement(12);
-        editScroll.setPreferredSize(new Dimension(320, 120));
-        editScroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, 120));
-        editScroll.setAlignmentX(Component.LEFT_ALIGNMENT);
-        body.add(editScroll);
-        body.add(Box.createVerticalStrut(6));
+        attachButton.setEnabled(false);
+        if (sendButton != null && saveEditIcon != null) {
+            sendButton.setIcon(saveEditIcon);
+            sendButton.setToolTipText(I18n.t(I18n.Key.EDIT_MESSAGE_HINT));
+        }
 
-        JPanel footer = new JPanel(new BorderLayout(8, 0));
-        footer.setOpaque(false);
-        footer.setAlignmentX(Component.LEFT_ALIGNMENT);
-        footer.setMaximumSize(new Dimension(Integer.MAX_VALUE, 20));
+        String text = msg.getText() != null ? msg.getText() : "";
+        inputField.setText(text);
+        inputField.setCaretPosition(inputField.getDocument().getLength());
+        updateInputAreaHeight();
+        refreshEditingHighlights();
+        southPanelRevalidate();
 
-        JLabel hintLabel = new JLabel(I18n.t(I18n.Key.EDIT_MESSAGE_HINT));
-        hintLabel.setFont(Theme.FONT_SMALL);
-        hintLabel.setForeground(Theme.TEXT_MUTED);
-
-        JLabel counterLabel = new JLabel();
-        counterLabel.setFont(Theme.FONT_SMALL);
-
-        footer.add(hintLabel, BorderLayout.WEST);
-        footer.add(counterLabel, BorderLayout.EAST);
-        body.add(footer);
-
-        JButton cancelButton = secondaryButton(I18n.t(I18n.Key.CANCEL));
-        JButton saveButton = accentButton(I18n.t(I18n.Key.SAVE));
-        saveButton.setPreferredSize(new Dimension(96, 32));
-
-        Runnable refreshState = () -> {
-            int len = editArea.getText().length();
-            counterLabel.setText(len + "/" + ChatMessage.MAX_TEXT_LENGTH);
-            counterLabel.setForeground(len >= ChatMessage.MAX_TEXT_LENGTH
-                    ? Theme.DANGER : Theme.TEXT_MUTED);
-            boolean valid = msg.hasAttachment() || !editArea.getText().trim().isEmpty();
-            saveButton.setEnabled(valid);
-        };
-        refreshState.run();
-        editArea.getDocument().addDocumentListener(new DocumentListener() {
-            @Override
-            public void insertUpdate(DocumentEvent e) {
-                refreshState.run();
-            }
-
-            @Override
-            public void removeUpdate(DocumentEvent e) {
-                refreshState.run();
-            }
-
-            @Override
-            public void changedUpdate(DocumentEvent e) {
-                refreshState.run();
+        SwingUtilities.invokeLater(() -> {
+            inputField.requestFocusInWindow();
+            for (Component comp : messagesContainer.getComponents()) {
+                if (comp instanceof MessageRow row && row.msg == msg) {
+                    messagesContainer.scrollRectToVisible(row.getBounds());
+                    break;
+                }
             }
         });
+    }
 
-        JDialog dialog = createStyledDialog(I18n.t(I18n.Key.EDIT_MESSAGE_TITLE), body,
-                dialogButtons(cancelButton, saveButton), null, editArea);
-        cancelButton.addActionListener(e -> dialog.dispose());
+    private void cancelEditingMessage(boolean restoreDraft) {
+        if (this.editingMessage == null) {
+            return;
+        }
+        this.editingMessage = null;
+        this.editingTargetGroup = null;
+        this.editingTargetPeer = null;
 
-        Runnable commitEdit = () -> {
-            String updated = editArea.getText().trim();
-            if (!msg.hasAttachment() && updated.isEmpty()) {
-                return;
-            }
-            dialog.dispose();
-            if (!updated.equals(msg.getText())) {
-                applyLocalMessageEdit(msg, updated, targetGroup, targetPeer);
-            }
-        };
+        if (editBanner != null) {
+            editBanner.setVisible(false);
+        }
+        attachButton.setEnabled(true);
+        if (sendButton != null && sendIconNormal != null) {
+            sendButton.setIcon(sendIconNormal);
+            sendButton.setToolTipText(I18n.t(I18n.Key.CHAT_INPUT_TOOLTIP));
+        }
 
-        saveButton.addActionListener(e -> commitEdit.run());
-        editArea.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), "aero-commit-edit");
-        editArea.getActionMap().put("aero-commit-edit", new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                commitEdit.run();
-            }
-        });
-        editArea.getInputMap().put(
-                KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, InputEvent.SHIFT_DOWN_MASK),
-                "aero-insert-newline");
-        editArea.getActionMap().put("aero-insert-newline", new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                editArea.replaceSelection("\n");
-            }
-        });
+        if (restoreDraft) {
+            inputField.setText(draftBeforeEdit != null ? draftBeforeEdit : "");
+            inputField.setCaretPosition(inputField.getDocument().getLength());
+        } else {
+            inputField.setText("");
+        }
+        draftBeforeEdit = null;
+        updateInputAreaHeight();
+        refreshEditingHighlights();
+        southPanelRevalidate();
+    }
 
-        dialog.setVisible(true);
+    private void commitEditingMessage() {
+        ChatMessage target = this.editingMessage;
+        if (target == null) {
+            return;
+        }
+        String updated = inputField.getText().trim();
+        if (updated.length() > ChatMessage.MAX_TEXT_LENGTH) {
+            JOptionPane.showMessageDialog(this,
+                    I18n.t(I18n.Key.MESSAGE_TOO_LONG,
+                            updated.length(), ChatMessage.MAX_TEXT_LENGTH),
+                    I18n.t(I18n.Key.MESSAGE_TOO_LONG_TITLE),
+                    JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        if (!target.hasAttachment() && updated.isEmpty()) {
+            inputField.requestFocusInWindow();
+            return;
+        }
+
+        ChatGroup targetGroup = this.editingTargetGroup;
+        Peer targetPeer = this.editingTargetPeer;
+        cancelEditingMessage(false);
+        if (!updated.equals(target.getText())) {
+            applyLocalMessageEdit(target, updated, targetGroup, targetPeer);
+        }
+        inputField.requestFocusInWindow();
+    }
+
+    private void southPanelRevalidate() {
+        if (chatViewPanel != null) {
+            chatViewPanel.revalidate();
+            chatViewPanel.repaint();
+        }
+    }
+
+    private void refreshEditingHighlights() {
+        for (Component comp : messagesContainer.getComponents()) {
+            if (comp instanceof MessageRow row) {
+                row.bubble.repaint();
+            }
+        }
     }
 
     private void confirmAndDeleteMessage(ChatMessage msg) {
@@ -2438,37 +2979,51 @@ public class ChatPopupWindow extends JDialog {
             return;
         }
 
+        showDangerConfirmDialog(
+                I18n.t(I18n.Key.DELETE_MESSAGE_TITLE),
+                I18n.t(msg.isIncoming()
+                        ? I18n.Key.DELETE_MESSAGE_CONFIRM_LOCAL
+                        : I18n.Key.DELETE_MESSAGE_CONFIRM),
+                () -> applyLocalMessageDelete(msg, convKey, targetGroup, targetPeer));
+    }
+
+    private void showDangerConfirmDialog(String title, String messageText, Runnable onConfirm) {
         JPanel body = new JPanel(new BorderLayout());
         body.setBackground(Theme.BG_WINDOW);
         body.setBorder(BorderFactory.createEmptyBorder(14, 16, 12, 16));
 
-        JLabel prompt = new JLabel(I18n.t(msg.isIncoming()
-                ? I18n.Key.DELETE_MESSAGE_CONFIRM_LOCAL
-                : I18n.Key.DELETE_MESSAGE_CONFIRM));
+        JTextArea prompt = new JTextArea(messageText);
+        prompt.setEditable(false);
+        prompt.setFocusable(false);
+        prompt.setOpaque(false);
+        prompt.setLineWrap(true);
+        prompt.setWrapStyleWord(true);
         prompt.setFont(Theme.FONT_BODY);
         prompt.setForeground(Theme.TEXT_PRIMARY);
+        prompt.setSize(new Dimension(300, Short.MAX_VALUE));
+        prompt.setPreferredSize(new Dimension(300, prompt.getPreferredSize().height));
         body.add(prompt, BorderLayout.CENTER);
 
         JButton cancelButton = secondaryButton(I18n.t(I18n.Key.CANCEL));
-        JButton deleteButton = UiIcons.darkButton(
+        JButton deleteButton = UiIcons.themedButton(
                 I18n.t(I18n.Key.DELETE_MESSAGE),
                 null,
-                Theme.BTN_DANGER,
-                Theme.BTN_DANGER_HOVER,
-                Theme.BTN_DARK_BORDER,
-                Color.WHITE,
+                () -> Theme.BTN_DANGER,
+                () -> Theme.BTN_DANGER_HOVER,
+                () -> Theme.BTN_DARK_BORDER,
+                () -> Color.WHITE,
                 8
         );
         deleteButton.setFont(Theme.FONT_SMALL);
         deleteButton.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
         deleteButton.setPreferredSize(new Dimension(96, 32));
 
-        JDialog dialog = createStyledDialog(I18n.t(I18n.Key.DELETE_MESSAGE_TITLE), body,
+        JDialog dialog = createStyledDialog(title, body,
                 dialogButtons(cancelButton, deleteButton), deleteButton, deleteButton);
         cancelButton.addActionListener(e -> dialog.dispose());
         deleteButton.addActionListener(e -> {
             dialog.dispose();
-            applyLocalMessageDelete(msg, convKey, targetGroup, targetPeer);
+            onConfirm.run();
         });
         dialog.setVisible(true);
     }
@@ -2502,6 +3057,9 @@ public class ChatPopupWindow extends JDialog {
             return;
         }
 
+        if (msg == editingMessage) {
+            cancelEditingMessage(false);
+        }
         cleanupMessageResources(msg);
         if (!msg.isIncoming() && msg.hasAttachment()) {
             network.revokeFileOffer(msg.getAttachment().getTransferId());
@@ -2532,31 +3090,60 @@ public class ChatPopupWindow extends JDialog {
         att.cancel();
         att.cancelSaving();
         inlineImageCache.remove(att.getTransferId());
+        Path localPath = att.getLocalPath();
+        if (localPath != null && isManagedCacheFile(localPath)) {
+            try {
+                Files.deleteIfExists(localPath);
+            } catch (IOException ignored) {
+            }
+        }
+    }
+
+    private boolean isManagedCacheFile(Path path) {
+        if (path == null) {
+            return false;
+        }
+        Path normalized = path.toAbsolutePath().normalize();
+        Path mediaDir = settings.getMediaDir();
+        if (mediaDir != null && normalized.startsWith(mediaDir.toAbsolutePath().normalize())) {
+            return true;
+        }
+        Path transferDir = network.getTransferDir();
+        return transferDir != null && normalized.startsWith(transferDir.toAbsolutePath().normalize());
+    }
+
+    private static void deleteDirectoryQuietly(Path dir) {
+        if (dir == null || !Files.exists(dir)) {
+            return;
+        }
+        try (Stream<Path> walk = Files.walk(dir)) {
+            walk.sorted(Comparator.reverseOrder()).forEach(path -> {
+                try {
+                    Files.deleteIfExists(path);
+                } catch (IOException ignored) {
+                }
+            });
+        } catch (IOException ignored) {
+        }
     }
 
     private JPanel buildAttachmentView(ChatMessage msg, FileAttachment att, MessageRow row) {
         JPanel container = new JPanel(new BorderLayout(0, 4));
         container.setOpaque(false);
 
-        Runnable rebuild = () -> {
-            if (!SwingUtilities.isDescendingFrom(row, messagesContainer)) {
-                return;
-            }
-            container.removeAll();
-            populateAttachmentContainer(container, msg, att, row);
-            container.revalidate();
-            container.repaint();
-            row.revalidate();
-            messagesContainer.revalidate();
-        };
-
+        // Register listener BEFORE reading initial attachment state so rapid background
+        // completion cannot fire notifyListener() while changeListener is still null.
+        att.setChangeListener(() -> SwingUtilities.invokeLater(
+                () -> rebuildAttachmentContainerIfNeeded(container, msg, att, row)));
         populateAttachmentContainer(container, msg, att, row);
-        att.setChangeListener(() -> SwingUtilities.invokeLater(rebuild));
         return container;
     }
 
     private void populateAttachmentContainer(JPanel container, ChatMessage msg,
                                              FileAttachment att, MessageRow row) {
+        Color textCol = msg.isIncoming() ? Theme.BUBBLE_IN_TEXT : Theme.BUBBLE_OUT_TEXT;
+        Color metaCol = msg.isIncoming() ? Theme.BUBBLE_IN_META : Theme.BUBBLE_OUT_META;
+
         boolean hasLocalFile = !att.isEncryptedPendingUnlock()
                 && att.getLocalPath() != null
                 && Files.isRegularFile(att.getLocalPath())
@@ -2565,6 +3152,8 @@ public class ChatPopupWindow extends JDialog {
                 && (hasLocalFile || att.canDownloadFromPeer());
 
         if (att.isImage() && hasLocalFile) {
+            container.putClientProperty("aero.renderedInline", att.getLocalPath());
+            container.putClientProperty("aero.renderedSaving", Boolean.valueOf(att.isSaving()));
             JPanel imageRow = new JPanel(new BorderLayout(6, 0));
             imageRow.setOpaque(false);
 
@@ -2578,7 +3167,7 @@ public class ChatPopupWindow extends JDialog {
                 imgLabel.setIcon(cached);
             } else {
                 imgLabel.setText(att.getFileName());
-                imgLabel.setForeground(Theme.TEXT_PRIMARY);
+                imgLabel.setForeground(textCol);
                 imgLabel.setFont(Theme.FONT_SMALL);
                 loadInlineImageAsync(att, imgLabel, row);
             }
@@ -2611,8 +3200,7 @@ public class ChatPopupWindow extends JDialog {
 
             JLabel metaLabel = new JLabel(buildAttachmentSubtitle(msg, att, true));
             metaLabel.setFont(Theme.FONT_SMALL);
-            metaLabel.setForeground(att.getStatus() == FileAttachment.Status.FAILED
-                    ? Theme.DANGER : new Color(225, 228, 240, 200));
+            metaLabel.setForeground(att.getStatus() == FileAttachment.Status.FAILED ? Theme.DANGER : metaCol);
 
             attachMessagePopup(imageRow, row);
             attachMessagePopup(metaLabel, row);
@@ -2622,23 +3210,28 @@ public class ChatPopupWindow extends JDialog {
             return;
         }
 
-        // File card (or locked encrypted file, or in-progress incoming transfer)
-        JPanel card = new JPanel(new BorderLayout(8, 0));
-        card.setBackground(new Color(0, 0, 0, 45));
-        card.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(new Color(255, 255, 255, 32), 1),
-                BorderFactory.createEmptyBorder(6, 8, 6, 8)
-        ));
+        container.putClientProperty("aero.renderedInline", null);
+        container.putClientProperty("aero.renderedSaving", Boolean.FALSE);
 
-        JLabel icon = new JLabel(UiIcons.fileBadge(Theme.TEXT_PRIMARY, 22));
+        UiComponents.RoundedPanel card = new UiComponents.RoundedPanel(
+                new BorderLayout(8, 0), 10,
+                () -> new Color(0, 0, 0, msg.isIncoming() && Theme.isLight(Theme.BUBBLE_IN) ? 16 : 45),
+                () -> new Color(textCol.getRed(), textCol.getGreen(), textCol.getBlue(), 40));
+        card.setBorder(BorderFactory.createEmptyBorder(6, 8, 6, 8));
+
+        JLabel icon = new JLabel(UiIcons.fileBadge(() -> textCol, 22));
         icon.setPreferredSize(new Dimension(24, 28));
 
         String titleText = att.isEncryptedPendingUnlock()
-                ? "\uD83D\uDD12 " + I18n.t(I18n.Key.ENCRYPTED_FILE)
+                ? I18n.t(I18n.Key.ENCRYPTED_FILE)
                 : truncateFileName(att.getFileName(), 24);
         JLabel nameLabel = new JLabel(titleText);
+        if (att.isEncryptedPendingUnlock()) {
+            nameLabel.setIcon(UiIcons.lock(() -> textCol, 12));
+            nameLabel.setIconTextGap(5);
+        }
         nameLabel.setFont(Theme.FONT_BOLD);
-        nameLabel.setForeground(Theme.TEXT_PRIMARY);
+        nameLabel.setForeground(textCol);
         if (!att.isEncryptedPendingUnlock()) {
             nameLabel.setToolTipText(att.getFileName());
         }
@@ -2649,9 +3242,9 @@ public class ChatPopupWindow extends JDialog {
         if (att.getStatus() == FileAttachment.Status.FAILED) {
             subColor = Theme.DANGER;
         } else if (att.getStatus() == FileAttachment.Status.AVAILABLE && !att.isEncryptedPendingUnlock()) {
-            subColor = Theme.ACCENT;
+            subColor = msg.isIncoming() ? Theme.ACCENT_HOVER : textCol;
         } else {
-            subColor = new Color(225, 228, 240, 200);
+            subColor = metaCol;
         }
         subLabel.setForeground(subColor);
 
@@ -2703,33 +3296,43 @@ public class ChatPopupWindow extends JDialog {
 
     private void refreshAttachmentContainer(JPanel container, ChatMessage msg,
                                             FileAttachment att, MessageRow row) {
-        Runnable rebuild = () -> {
-            if (!SwingUtilities.isDescendingFrom(row, messagesContainer)) {
-                return;
-            }
-            container.removeAll();
-            populateAttachmentContainer(container, msg, att, row);
-            container.revalidate();
-            container.repaint();
-            row.revalidate();
-            row.repaint();
-        };
         if (SwingUtilities.isEventDispatchThread()) {
-            rebuild.run();
+            rebuildAttachmentContainerIfNeeded(container, msg, att, row);
         } else {
-            SwingUtilities.invokeLater(rebuild);
+            SwingUtilities.invokeLater(() -> rebuildAttachmentContainerIfNeeded(container, msg, att, row));
         }
+    }
+
+    private void rebuildAttachmentContainerIfNeeded(JPanel container, ChatMessage msg,
+                                                    FileAttachment att, MessageRow row) {
+        if (!SwingUtilities.isDescendingFrom(row, messagesContainer)) {
+            return;
+        }
+        if (att.isImage()
+                && att.getStatus() == FileAttachment.Status.COMPLETED
+                && java.util.Objects.equals(container.getClientProperty("aero.renderedInline"), att.getLocalPath())
+                && Boolean.valueOf(att.isSaving()).equals(container.getClientProperty("aero.renderedSaving"))) {
+            return;
+        }
+        container.removeAll();
+        populateAttachmentContainer(container, msg, att, row);
+        container.revalidate();
+        container.repaint();
+        row.revalidate();
+        row.repaint();
+        messagesContainer.invalidate();
+        messagesScroll.validate();
     }
 
     private JButton createDownloadButton(FileAttachment att, boolean enabled,
                                          Runnable onStateChanged) {
-        JButton btn = UiIcons.darkButton(
+        JButton btn = UiIcons.themedButton(
                 null,
-                UiIcons.download(enabled ? Theme.TEXT_PRIMARY : Theme.TEXT_MUTED, 15),
-                Theme.BTN_DARK,
-                Theme.BTN_DARK_HOVER,
-                Theme.BTN_DARK_BORDER,
-                Theme.TEXT_PRIMARY,
+                UiIcons.download(() -> enabled ? Theme.TEXT_PRIMARY : Theme.TEXT_MUTED, 15),
+                () -> Theme.BTN_DARK,
+                () -> Theme.BTN_DARK_HOVER,
+                () -> Theme.BTN_DARK_BORDER,
+                () -> Theme.TEXT_PRIMARY,
                 8
         );
         btn.setPreferredSize(new Dimension(30, 30));
@@ -2742,13 +3345,13 @@ public class ChatPopupWindow extends JDialog {
     }
 
     private JButton createCancelButton(String tooltip, Runnable action) {
-        JButton btn = UiIcons.darkButton(
+        JButton btn = UiIcons.themedButton(
                 null,
-                UiIcons.cancel(Theme.TEXT_PRIMARY, 13),
-                Theme.BTN_DANGER,
-                Theme.BTN_DANGER_HOVER,
-                Theme.BTN_DARK_BORDER,
-                Theme.TEXT_PRIMARY,
+                UiIcons.cancel(() -> Color.WHITE, 13),
+                () -> Theme.BTN_DANGER,
+                () -> Theme.BTN_DANGER_HOVER,
+                () -> Theme.BTN_DARK_BORDER,
+                () -> Color.WHITE,
                 8
         );
         btn.setPreferredSize(new Dimension(30, 30));
@@ -2801,7 +3404,8 @@ public class ChatPopupWindow extends JDialog {
                         target.setIcon(icon);
                         target.revalidate();
                         row.revalidate();
-                        messagesContainer.revalidate();
+                        messagesContainer.invalidate();
+                        messagesScroll.validate();
                         messagesContainer.repaint();
                         if (wasAtBottom) {
                             scrollToBottom();
@@ -2868,7 +3472,9 @@ public class ChatPopupWindow extends JDialog {
                 if (onStateChanged != null) {
                     onStateChanged.run();
                 }
-                if (outcome == PeerNetwork.DownloadOutcome.UNAVAILABLE) {
+                if (outcome == PeerNetwork.DownloadOutcome.COMPLETED) {
+                    scheduleHistorySave();
+                } else if (outcome == PeerNetwork.DownloadOutcome.UNAVAILABLE) {
                     JOptionPane.showMessageDialog(
                             this,
                             I18n.t(I18n.Key.FILE_UNAVAILABLE_ERROR),
@@ -2952,18 +3558,40 @@ public class ChatPopupWindow extends JDialog {
     }
 
     public void promptRename() {
-        String updated = (String) JOptionPane.showInputDialog(
-                isVisible() ? this : null,
-                I18n.t(I18n.Key.RENAME_PROMPT),
-                I18n.t(I18n.Key.RENAME_TITLE),
-                JOptionPane.PLAIN_MESSAGE,
-                null,
-                null,
-                network.getMyName()
-        );
-        if (updated != null && !updated.trim().isEmpty()) {
-            applyDisplayName(updated.trim());
-        }
+        JPanel body = new JPanel();
+        body.setLayout(new BoxLayout(body, BoxLayout.Y_AXIS));
+        body.setBackground(Theme.BG_WINDOW);
+        body.setBorder(BorderFactory.createEmptyBorder(10, 16, 6, 16));
+
+        JLabel promptLabel = new JLabel(I18n.t(I18n.Key.RENAME_PROMPT));
+        promptLabel.setFont(Theme.FONT_BODY);
+        promptLabel.setForeground(Theme.TEXT_PRIMARY);
+        promptLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
+        body.add(promptLabel);
+        body.add(Box.createVerticalStrut(8));
+
+        JTextField nameInput = new JTextField(network.getMyName());
+        styleTextField(nameInput);
+        nameInput.setMaximumSize(new Dimension(Integer.MAX_VALUE, 32));
+        nameInput.setAlignmentX(Component.LEFT_ALIGNMENT);
+        nameInput.selectAll();
+        body.add(nameInput);
+
+        JButton cancelButton = secondaryButton(I18n.t(I18n.Key.CANCEL));
+        JButton saveButton = accentButton(I18n.t(I18n.Key.SAVE));
+        saveButton.setPreferredSize(new Dimension(96, 32));
+
+        JDialog dialog = createStyledDialog(I18n.t(I18n.Key.RENAME_TITLE), body,
+                dialogButtons(cancelButton, saveButton), saveButton, nameInput);
+        cancelButton.addActionListener(e -> dialog.dispose());
+        saveButton.addActionListener(e -> {
+            String updated = nameInput.getText().trim();
+            if (!updated.isEmpty()) {
+                applyDisplayName(updated);
+                dialog.dispose();
+            }
+        });
+        dialog.setVisible(true);
     }
 
     private void saveDisplayNameFromSettings() {
@@ -2991,6 +3619,9 @@ public class ChatPopupWindow extends JDialog {
         settings.setDisplayName(name);
         displayNameField.setText(name);
         updateMyNameLabel();
+        if (selfAvatar != null) {
+            selfAvatar.setNameText(name);
+        }
         nameChangeListener.accept(name);
     }
 
@@ -3002,34 +3633,42 @@ public class ChatPopupWindow extends JDialog {
         if (activePeer != null) {
             boolean online = latestPeers.stream()
                     .anyMatch(peer -> peer.getId().equals(activePeer.getId()));
-            headerSubtitle.setText(I18n.t(online ? I18n.Key.ONLINE : I18n.Key.OFFLINE));
+            headerSubtitle.setText("● " + I18n.t(online ? I18n.Key.ONLINE : I18n.Key.OFFLINE));
+            headerSubtitle.setForeground(online ? Theme.ONLINE_DOT : Theme.TEXT_MUTED);
         } else if (activeGroup != null) {
             headerSubtitle.setText(memberStatus(activeGroup));
+            headerSubtitle.setForeground(Theme.TEXT_MUTED);
+        } else {
+            headerSubtitle.setForeground(Theme.TEXT_MUTED);
         }
     }
 
-    private String memberStatus(ChatGroup group) {
+    private String memberStatusShort(ChatGroup group) {
         int members = group.getMemberCount();
+        int online = countOnlineMembers(group);
+        return members == 1
+                ? I18n.t(I18n.Key.MEMBER_STATUS_ONE, online)
+                : I18n.t(I18n.Key.MEMBER_STATUS_MANY, members, online);
+    }
+
+    private String memberStatus(ChatGroup group) {
+        String status = memberStatusShort(group);
+        if (group.isPasswordProtected()) {
+            status += " · " + I18n.t(I18n.Key.PASSWORD_PROTECTED);
+        }
+        return status;
+    }
+
+    private int countOnlineMembers(ChatGroup group) {
         int online = group.hasMember(network.getMyId()) ? 1 : 0;
         for (Peer peer : latestPeers) {
             if (group.hasMember(peer.getId())) {
                 online++;
             }
         }
-        online = Math.min(online, members);
-
-        String status = members == 1
-                ? I18n.t(I18n.Key.MEMBER_STATUS_ONE, online)
-                : I18n.t(I18n.Key.MEMBER_STATUS_MANY, members, online);
-        if (group.isPasswordProtected()) {
-            status += " · \uD83D\uDD12 " + I18n.t(I18n.Key.PASSWORD_PROTECTED);
-        }
-        return status;
+        return Math.min(online, group.getMemberCount());
     }
 
-    /**
-     * Switches the UI language and refreshes every visible text.
-     */
     private void changeLanguage(I18n.Language language) {
         if (I18n.getLanguage() == language) return;
         I18n.setLanguage(language);
@@ -3039,23 +3678,51 @@ public class ChatPopupWindow extends JDialog {
     }
 
     private void applyLanguageTexts() {
+        backButton.setToolTipText(I18n.t(I18n.Key.BACK_TOOLTIP));
         settingsButton.setToolTipText(I18n.t(I18n.Key.SETTINGS_TOOLTIP));
         membersButton.setToolTipText(I18n.t(I18n.Key.VIEW_MEMBERS));
         attachButton.setToolTipText(I18n.t(I18n.Key.ATTACH_FILE_TOOLTIP));
         dropBanner.setText(I18n.t(I18n.Key.DROP_FILES_HINT));
         newGroupButton.setText(I18n.t(I18n.Key.GROUP_BUTTON));
-        renameButton.setText(I18n.t(I18n.Key.RENAME_BUTTON));
-        connectButton.setText(I18n.t(I18n.Key.IP_CONNECT));
-        ipField.setToolTipText(I18n.t(I18n.Key.IP_TOOLTIP));
+        renameButton.setToolTipText(I18n.t(I18n.Key.RENAME_BUTTON));
+        inputField.setToolTipText(editingMessage != null
+                ? I18n.t(I18n.Key.EDIT_MESSAGE_HINT)
+                : I18n.t(I18n.Key.CHAT_INPUT_TOOLTIP));
+        if (editTitleLabel != null) {
+            editTitleLabel.setText(I18n.t(I18n.Key.EDIT_MESSAGE_TITLE));
+        }
+        if (cancelEditButton != null) {
+            cancelEditButton.setToolTipText(I18n.t(I18n.Key.CANCEL));
+        }
+        if (sendButton != null) {
+            sendButton.setToolTipText(editingMessage != null
+                    ? I18n.t(I18n.Key.EDIT_MESSAGE_HINT)
+                    : I18n.t(I18n.Key.CHAT_INPUT_TOOLTIP));
+        }
+        myStatusLabel.setText(I18n.t(I18n.Key.ONLINE));
         messageCounter.setToolTipText(I18n.t(I18n.Key.MESSAGE_LIMIT_TOOLTIP,
                 ChatMessage.MAX_TEXT_LENGTH));
 
-        notificationsSectionLabel.setText(I18n.t(I18n.Key.NOTIFICATIONS_SECTION));
-        notificationsCheck.setText(I18n.t(I18n.Key.NOTIFICATIONS_LABEL));
-        alwaysOnTopCheck.setText(I18n.t(I18n.Key.ALWAYS_ON_TOP_LABEL));
+        themeSectionLabel.setText(I18n.t(I18n.Key.THEME_SECTION));
+        presetsHintLabel.setText(I18n.t(I18n.Key.THEME_PRESETS));
+        resetColorsButton.setText(I18n.t(I18n.Key.RESET_COLORS));
+        for (PresetChipButton btn : presetButtons) {
+            btn.updateLabel();
+        }
+        for (ColorSwatchControl sw : colorSwatches) {
+            sw.updateLabel();
+        }
+
         messagesSectionLabel.setText(I18n.t(I18n.Key.MESSAGES_SECTION));
+        autoDownloadImagesCheck.setText(I18n.t(I18n.Key.AUTO_DOWNLOAD_IMAGES_LABEL));
+        autoDownloadImagesHintLabel.setText(I18n.t(I18n.Key.AUTO_DOWNLOAD_IMAGES_HINT));
         keepMessagesCheck.setText(I18n.t(I18n.Key.KEEP_MESSAGES_LABEL));
         keepMessagesHintLabel.setText(I18n.t(I18n.Key.KEEP_MESSAGES_HINT));
+
+        windowSectionLabel.setText(I18n.t(I18n.Key.WINDOW_SECTION));
+        notificationsCheck.setText(I18n.t(I18n.Key.NOTIFICATIONS_LABEL));
+        alwaysOnTopCheck.setText(I18n.t(I18n.Key.ALWAYS_ON_TOP_LABEL));
+
         nameSectionLabel.setText(I18n.t(I18n.Key.DISPLAY_NAME_SECTION));
         saveNameButton.setText(I18n.t(I18n.Key.SAVE));
         languageSectionLabel.setText(I18n.t(I18n.Key.LANGUAGE_SECTION));
@@ -3064,11 +3731,8 @@ public class ChatPopupWindow extends JDialog {
         germanRadio.setSelected(I18n.getLanguage() == I18n.Language.GERMAN);
         englishRadio.setSelected(I18n.getLanguage() == I18n.Language.ENGLISH);
 
-        myIpLabel.setText(I18n.t(I18n.Key.YOUR_IP,
-                network.getLocalIpAddress() + ":" + network.getMyPort()));
         updateMyNameLabel();
 
-        // Header texts depend on the card that is currently shown.
         if (CARD_SETTINGS.equals(currentCard)) {
             headerTitle.setText(I18n.t(I18n.Key.SETTINGS_TITLE));
             headerSubtitle.setText(I18n.t(I18n.Key.SETTINGS_SUBTITLE));
@@ -3087,9 +3751,9 @@ public class ChatPopupWindow extends JDialog {
         dialog.setUndecorated(true);
         dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
 
-        JPanel root = new JPanel(new BorderLayout());
-        root.setBackground(Theme.BG_WINDOW);
-        root.setBorder(BorderFactory.createLineBorder(Theme.BORDER, 1));
+        JPanel dlgRoot = new JPanel(new BorderLayout());
+        dlgRoot.setBackground(Theme.BG_WINDOW);
+        dlgRoot.setBorder(BorderFactory.createLineBorder(Theme.BORDER, 1));
 
         JPanel header = new JPanel(new BorderLayout());
         header.setBackground(Theme.BG_HEADER);
@@ -3102,28 +3766,24 @@ public class ChatPopupWindow extends JDialog {
         title.setFont(Theme.FONT_TITLE);
         title.setForeground(Theme.TEXT_PRIMARY);
 
-        JButton closeButton = new JButton("×");
-        closeButton.setFont(Theme.FONT_TITLE);
-        closeButton.setForeground(Theme.TEXT_MUTED);
-        closeButton.setContentAreaFilled(false);
-        closeButton.setBorderPainted(false);
-        closeButton.setFocusPainted(false);
-        closeButton.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        closeButton.setMargin(new Insets(0, 4, 0, 4));
+        JButton closeButton = UiIcons.iconButton(
+                UiIcons.cancel(() -> Theme.TEXT_MUTED, 13),
+                UiIcons.cancel(() -> Theme.TEXT_PRIMARY, 13),
+                26, 7);
         closeButton.addActionListener(e -> dialog.dispose());
 
-        header.add(title, BorderLayout.WEST);
+        header.add(title, BorderLayout.CENTER);
         header.add(closeButton, BorderLayout.EAST);
 
-        root.add(header, BorderLayout.NORTH);
-        root.add(body, BorderLayout.CENTER);
-        root.add(buttons, BorderLayout.SOUTH);
-        dialog.setContentPane(root);
+        dlgRoot.add(header, BorderLayout.NORTH);
+        dlgRoot.add(body, BorderLayout.CENTER);
+        dlgRoot.add(buttons, BorderLayout.SOUTH);
+        dialog.setContentPane(dlgRoot);
         if (defaultButton != null) {
             dialog.getRootPane().setDefaultButton(defaultButton);
         }
 
-        root.registerKeyboardAction(
+        dlgRoot.registerKeyboardAction(
                 e -> dialog.dispose(),
                 KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0),
                 JPanel.WHEN_IN_FOCUSED_WINDOW
@@ -3193,10 +3853,9 @@ public class ChatPopupWindow extends JDialog {
         }
 
         JScrollPane memberScroll = new JScrollPane(memberList);
+        UiComponents.styleScrollPane(memberScroll, () -> Theme.BG_WINDOW);
         memberScroll.setBorder(BorderFactory.createLineBorder(Theme.BORDER, 1));
-        memberScroll.getViewport().setBackground(Theme.BG_WINDOW);
         memberScroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
-        memberScroll.getVerticalScrollBar().setUnitIncrement(12);
         int listHeight = Math.min(130, Math.max(50, available.size() * 28 + 10));
         memberScroll.setPreferredSize(new Dimension(300, listHeight));
         memberScroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, listHeight));
@@ -3288,10 +3947,6 @@ public class ChatPopupWindow extends JDialog {
         dialog.setVisible(true);
     }
 
-    /**
-     * Asks for the password of a protected group. Returns true when the
-     * correct password was entered (the derived key is then stored locally).
-     */
     private boolean promptForGroupPassword(ChatGroup group) {
         JPanel body = new JPanel();
         body.setLayout(new BoxLayout(body, BoxLayout.Y_AXIS));
@@ -3336,7 +3991,7 @@ public class ChatPopupWindow extends JDialog {
                 if (GroupCrypto.verify(key, group.getPasswordCheck())) {
                     group.setPasswordKey(GroupCrypto.encodeKey(key));
                     settings.save();
-                    decryptStoredMessages(group, key);
+                    decryptStoredMessages(group, key, true);
                     unlocked[0] = true;
                     dialog.dispose();
                 } else {
@@ -3356,7 +4011,7 @@ public class ChatPopupWindow extends JDialog {
         return unlocked[0];
     }
 
-    private void decryptStoredMessages(ChatGroup group, byte[] key) {
+    private void decryptStoredMessages(ChatGroup group, byte[] key, boolean autoDownloadLiveImages) {
         List<ChatMessage> snapshot;
         synchronized (histories) {
             List<ChatMessage> messages = histories.get(groupKey(group.getId()));
@@ -3364,10 +4019,11 @@ public class ChatPopupWindow extends JDialog {
             snapshot = new ArrayList<>(messages);
         }
         for (ChatMessage message : snapshot) {
+            boolean unlockedAttachment = false;
             if (message.hasAttachment() && message.isIncoming()) {
                 FileAttachment att = message.getAttachment();
                 if (att.isEncryptedPendingUnlock()) {
-                    decryptGroupOfferMetadata(message, key);
+                    unlockedAttachment = decryptGroupOfferMetadata(message, key);
                 }
             }
             if (message.isEncrypted() && message.isIncoming()) {
@@ -3377,19 +4033,25 @@ public class ChatPopupWindow extends JDialog {
                 } catch (GeneralSecurityException | IllegalArgumentException ignored) {
                 }
             }
+            if (autoDownloadLiveImages && unlockedAttachment) {
+                FileAttachment att = message.getAttachment();
+                if (att != null && network.getPeerById(att.getOfferPeerId()) != null) {
+                    autoDownloadImageIfEligible(message, group);
+                }
+            }
         }
     }
 
-    private void decryptGroupOfferMetadata(ChatMessage message, byte[] key) {
+    private boolean decryptGroupOfferMetadata(ChatMessage message, byte[] key) {
         FileAttachment att = message.getAttachment();
         if (att == null || !att.isEncryptedPendingUnlock()) {
-            return;
+            return false;
         }
         try {
             String metaPlain = GroupCrypto.decrypt(key, att.getMetaIv(), att.getMetaCipherText());
             String[] metaParts = metaPlain.split("\\|", -1);
             if (metaParts.length < 3) {
-                return;
+                return false;
             }
             boolean isImage = "1".equals(metaParts[0]);
             String fileName = new String(Base64.getDecoder().decode(metaParts[1]), StandardCharsets.UTF_8);
@@ -3401,20 +4063,38 @@ public class ChatPopupWindow extends JDialog {
             att.setEncryptedPendingUnlock(false);
             message.setDecryptedText(caption);
             att.notifyListener();
+            return true;
         } catch (Exception ignored) {
+            return false;
         }
     }
 
     private void deleteGroup(ChatGroup group) {
-        int result = JOptionPane.showConfirmDialog(
-                isVisible() ? this : null,
-                I18n.t(I18n.Key.DELETE_GROUP_MESSAGE, group.getName()),
+        showDangerConfirmDialog(
                 I18n.t(I18n.Key.DELETE_GROUP_TITLE),
-                JOptionPane.YES_NO_OPTION,
-                JOptionPane.WARNING_MESSAGE
-        );
-        if (result != JOptionPane.YES_OPTION) {
-            return;
+                I18n.t(I18n.Key.DELETE_GROUP_MESSAGE, group.getName()),
+                () -> performDeleteGroup(group));
+    }
+
+    private void performDeleteGroup(ChatGroup group) {
+
+        List<ChatMessage> removedMsgs;
+        synchronized (histories) {
+            removedMsgs = histories.get(groupKey(group.getId()));
+            if (removedMsgs != null) {
+                removedMsgs = new ArrayList<>(removedMsgs);
+            }
+        }
+        if (removedMsgs != null) {
+            for (ChatMessage msg : removedMsgs) {
+                if (msg == editingMessage) {
+                    cancelEditingMessage(false);
+                }
+                cleanupMessageResources(msg);
+                if (!msg.isIncoming() && msg.hasAttachment()) {
+                    network.revokeFileOffer(msg.getAttachment().getTransferId());
+                }
+            }
         }
 
         settings.deleteGroup(group.getId());
@@ -3428,11 +4108,6 @@ public class ChatPopupWindow extends JDialog {
         notifyGroupMembersAboutDeletion(group);
     }
 
-    /**
-     * Removes a group after another member deleted it. Returns the deleted
-     * group so the caller can show a notification, or null when nothing
-     * was deleted.
-     */
     public ChatGroup handleRemoteGroupDeletion(Peer sender, String groupId) {
         ChatGroup group = settings.getGroup(groupId);
         if (group == null || !group.hasMember(sender.getId())) {
@@ -3443,8 +4118,6 @@ public class ChatPopupWindow extends JDialog {
         removeHistory(groupKey(groupId));
         unreadCounts.remove(groupKey(groupId));
         if (activeGroup != null && activeGroup.getId().equals(groupId)) {
-            // Do not pop the window open when the group was deleted while
-            // Aero was hidden in the background.
             showPeerSelector(isVisible());
         } else {
             renderPeerList();
@@ -3466,10 +4139,6 @@ public class ChatPopupWindow extends JDialog {
         thread.start();
     }
 
-    /**
-     * Opens a small window that lists every member of the group with their
-     * current online state.
-     */
     private void showGroupMembers(ChatGroup group) {
         if (group == null || settings.isGroupDeleted(group.getId())) {
             return;
@@ -3501,10 +4170,9 @@ public class ChatPopupWindow extends JDialog {
         }
 
         JScrollPane scroll = new JScrollPane(memberList);
+        UiComponents.styleScrollPane(scroll, () -> Theme.BG_WINDOW);
         scroll.setBorder(BorderFactory.createLineBorder(Theme.BORDER, 1));
-        scroll.getViewport().setBackground(Theme.BG_WINDOW);
         scroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
-        scroll.getVerticalScrollBar().setUnitIncrement(12);
         int listHeight = Math.min(240, Math.max(56, group.getMemberCount() * 39 + 8));
         scroll.setPreferredSize(new Dimension(300, listHeight));
         scroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, listHeight));
@@ -3530,13 +4198,10 @@ public class ChatPopupWindow extends JDialog {
         boolean online = self || latestPeers.stream()
                 .anyMatch(peer -> peer.getId().equals(memberId));
 
-        JPanel row = new JPanel(new BorderLayout(8, 0));
-        row.setBackground(Theme.BG_CARD);
-        row.setMaximumSize(new Dimension(Integer.MAX_VALUE, 34));
-        row.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(Theme.BORDER, 1),
-                BorderFactory.createEmptyBorder(7, 10, 7, 10)
-        ));
+        UiComponents.RoundedPanel row = new UiComponents.RoundedPanel(
+                new BorderLayout(8, 0), 10, () -> Theme.BG_CARD, () -> Theme.BORDER);
+        row.setMaximumSize(new Dimension(Integer.MAX_VALUE, 36));
+        row.setBorder(BorderFactory.createEmptyBorder(7, 10, 7, 10));
 
         JLabel dot = new JLabel("●");
         dot.setFont(Theme.FONT_SMALL);
@@ -3553,11 +4218,11 @@ public class ChatPopupWindow extends JDialog {
         name.setFont(Theme.FONT_BOLD);
         name.setForeground(Theme.TEXT_PRIMARY);
 
-        JPanel left = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
+        JPanel left = new JPanel(new BorderLayout(8, 0));
         left.setOpaque(false);
-        left.add(dot);
-        left.add(name);
-        row.add(left, BorderLayout.WEST);
+        left.add(dot, BorderLayout.WEST);
+        left.add(name, BorderLayout.CENTER);
+        row.add(left, BorderLayout.CENTER);
 
         JLabel status = new JLabel(I18n.t(online ? I18n.Key.ONLINE : I18n.Key.OFFLINE));
         status.setFont(Theme.FONT_SMALL);
@@ -3571,16 +4236,51 @@ public class ChatPopupWindow extends JDialog {
         label.setFont(Theme.FONT_SMALL.deriveFont(Font.BOLD));
         label.setForeground(Theme.TEXT_MUTED);
         label.setAlignmentX(Component.LEFT_ALIGNMENT);
-        label.setBorder(BorderFactory.createEmptyBorder(4, 2, 4, 2));
+        label.setBorder(BorderFactory.createEmptyBorder(4, 2, 5, 2));
         return label;
     }
 
     private void styleCheckBox(JCheckBox box) {
         box.setOpaque(false);
+        box.setContentAreaFilled(false);
+        box.setBorderPainted(false);
         box.setForeground(Theme.TEXT_PRIMARY);
         box.setFont(Theme.FONT_BODY);
         box.setFocusPainted(false);
+        box.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        box.setIconTextGap(8);
         box.setBorder(BorderFactory.createEmptyBorder(4, 0, 4, 0));
+        box.setIcon(new Icon() {
+            private static final int S = 16;
+
+            @Override
+            public void paintIcon(Component c, Graphics g, int x, int y) {
+                boolean selected = c instanceof JCheckBox cb && cb.isSelected();
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g2.setColor(selected ? Theme.ACCENT : Theme.BG_INPUT);
+                g2.fillRoundRect(x, y, S, S, 5, 5);
+                g2.setColor(selected ? Theme.ACCENT : Theme.BORDER);
+                g2.drawRoundRect(x, y, S - 1, S - 1, 5, 5);
+                if (selected) {
+                    g2.setColor(Theme.BTN_ACCENT_TEXT);
+                    g2.setStroke(new BasicStroke(2.0f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                    g2.drawLine(x + 4, y + 8, x + 7, y + 11);
+                    g2.drawLine(x + 7, y + 11, x + 12, y + 5);
+                }
+                g2.dispose();
+            }
+
+            @Override
+            public int getIconWidth() {
+                return S;
+            }
+
+            @Override
+            public int getIconHeight() {
+                return S;
+            }
+        });
     }
 
     private void styleTextField(JTextField field) {
@@ -3594,10 +4294,6 @@ public class ChatPopupWindow extends JDialog {
         ));
     }
 
-    /**
-     * Caps the length of a text field so pasting a huge text can never create
-     * an oversized chat message. Excess characters are simply ignored.
-     */
     private static void installLengthLimit(JTextComponent field, int maxLength) {
         AbstractDocument document = (AbstractDocument) field.getDocument();
         document.setDocumentFilter(new DocumentFilter() {
@@ -3635,46 +4331,33 @@ public class ChatPopupWindow extends JDialog {
         return text.substring(0, end);
     }
 
-    private JButton linkButton(String text, Runnable action) {
-        JButton button = new JButton(text);
-        button.setFont(Theme.FONT_SMALL);
-        button.setForeground(Theme.ACCENT_HOVER);
-        button.setContentAreaFilled(false);
-        button.setBorderPainted(false);
-        button.setFocusPainted(false);
-        button.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        button.setMargin(new Insets(0, 2, 0, 2));
-        button.addActionListener(e -> action.run());
-        return button;
-    }
-
     private JButton accentButton(String text) {
-        JButton button = UiIcons.darkButton(
+        JButton button = UiIcons.themedButton(
                 text,
                 null,
-                Theme.BTN_ACCENT,
-                Theme.BTN_ACCENT_HOVER,
-                Theme.BTN_DARK_BORDER,
-                Color.WHITE,
+                () -> Theme.BTN_ACCENT,
+                () -> Theme.BTN_ACCENT_HOVER,
+                () -> Theme.BTN_DARK_BORDER,
+                () -> Theme.BTN_ACCENT_TEXT,
                 8
         );
         button.setFont(Theme.FONT_SMALL);
-        button.setBorder(BorderFactory.createEmptyBorder(5, 8, 5, 8));
+        button.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
         return button;
     }
 
     private JButton secondaryButton(String text) {
-        JButton button = UiIcons.darkButton(
+        JButton button = UiIcons.themedButton(
                 text,
                 null,
-                Theme.BTN_DARK,
-                Theme.BTN_DARK_HOVER,
-                Theme.BTN_DARK_BORDER,
-                Theme.TEXT_PRIMARY,
+                () -> Theme.BTN_DARK,
+                () -> Theme.BTN_DARK_HOVER,
+                () -> Theme.BTN_DARK_BORDER,
+                () -> Theme.TEXT_PRIMARY,
                 8
         );
         button.setFont(Theme.FONT_SMALL);
-        button.setBorder(BorderFactory.createEmptyBorder(5, 8, 5, 8));
+        button.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
         return button;
     }
 
@@ -3696,10 +4379,6 @@ public class ChatPopupWindow extends JDialog {
         setLocation(x, y);
     }
 
-    /**
-     * Recenters the window only when its current position is completely
-     * outside all connected screens (for example after a monitor was removed).
-     */
     private void ensureOnScreen() {
         Dimension max = WindowResizer.usableScreenSize(this, MIN_WIDTH, MIN_HEIGHT);
         int w = Math.max(MIN_WIDTH, Math.min(max.width, getWidth()));
@@ -3718,7 +4397,162 @@ public class ChatPopupWindow extends JDialog {
         centerOnScreen();
     }
 
+    private final class PresetChipButton extends JButton {
+        private static final long serialVersionUID = 1L;
+        private final Theme.Preset preset;
+
+        PresetChipButton(Theme.Preset preset) {
+            this.preset = preset;
+            setUI(new BasicButtonUI());
+            setOpaque(false);
+            setContentAreaFilled(false);
+            setBorderPainted(false);
+            setFocusPainted(false);
+            setRolloverEnabled(true);
+            setFont(Theme.FONT_SMALL);
+            setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            setHorizontalAlignment(SwingConstants.LEFT);
+            setMargin(new Insets(3, 6, 3, 6));
+            setBorder(BorderFactory.createEmptyBorder(4, 26, 4, 6));
+            updateLabel();
+            addActionListener(e -> applyCustomPalette(
+                    preset.bgWindow(), preset.accent(), preset.bubbleOut(), preset.bubbleIn()));
+        }
+
+        void updateLabel() {
+            I18n.Key key = switch (preset.id()) {
+                case "ocean" -> I18n.Key.PRESET_OCEAN;
+                case "emerald" -> I18n.Key.PRESET_EMERALD;
+                case "rose" -> I18n.Key.PRESET_ROSE;
+                case "graphite" -> I18n.Key.PRESET_GRAPHITE;
+                case "light" -> I18n.Key.PRESET_LIGHT;
+                default -> I18n.Key.PRESET_AERO;
+            };
+            setText(I18n.t(key));
+        }
+
+        void refresh() {
+            setForeground(Theme.TEXT_PRIMARY);
+            repaint();
+        }
+
+        private boolean isSelectedPreset() {
+            return preset.bgWindow().equals(Theme.BG_WINDOW)
+                    && preset.accent().equals(Theme.ACCENT)
+                    && preset.bubbleOut().equals(Theme.BUBBLE_OUT)
+                    && preset.bubbleIn().equals(Theme.BUBBLE_IN);
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            boolean selected = isSelectedPreset();
+            Color fill = getModel().isRollover() ? Theme.BG_CARD_HOVER : Theme.BG_INPUT;
+            g2.setColor(fill);
+            g2.fillRoundRect(0, 0, getWidth(), getHeight(), 9, 9);
+            g2.setColor(selected ? Theme.ACCENT : Theme.BORDER);
+            g2.drawRoundRect(0, 0, getWidth() - 1, getHeight() - 1, 9, 9);
+
+            int dot = 10;
+            int dy = (getHeight() - dot) / 2;
+            g2.setColor(preset.bgWindow());
+            g2.fillOval(6, dy, dot, dot);
+            g2.setColor(preset.accent());
+            g2.fillOval(11, dy, dot, dot);
+            g2.setColor(Theme.BORDER);
+            g2.drawOval(6, dy, dot, dot);
+            g2.dispose();
+
+            super.paintComponent(g);
+        }
+    }
+
+    private final class ColorSwatchControl extends UiComponents.RoundedPanel {
+        private static final long serialVersionUID = 1L;
+        private final I18n.Key labelKey;
+        private final Supplier<Color> colorSupplier;
+        private final JLabel titleLabel = new JLabel();
+        private final JLabel hexLabel = new JLabel();
+        private final JComponent previewDot;
+
+        ColorSwatchControl(I18n.Key labelKey, Supplier<Color> colorSupplier, Consumer<Color> onPicked) {
+            super(new BorderLayout(8, 0), 9, () -> Theme.BG_INPUT, () -> Theme.BORDER);
+            this.labelKey = labelKey;
+            this.colorSupplier = colorSupplier;
+            setBorder(BorderFactory.createEmptyBorder(5, 8, 5, 8));
+            setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+
+            previewDot = new JComponent() {
+                @Override
+                protected void paintComponent(Graphics g) {
+                    Graphics2D g2 = (Graphics2D) g.create();
+                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g2.setColor(colorSupplier.get());
+                    g2.fillRoundRect(1, 1, getWidth() - 2, getHeight() - 2, 6, 6);
+                    g2.setColor(Theme.BORDER);
+                    g2.drawRoundRect(1, 1, getWidth() - 3, getHeight() - 3, 6, 6);
+                    g2.dispose();
+                }
+            };
+            previewDot.setPreferredSize(new Dimension(20, 20));
+
+            JPanel info = new JPanel(new BorderLayout(0, 0));
+            info.setOpaque(false);
+            titleLabel.setFont(Theme.FONT_SMALL.deriveFont(Font.BOLD));
+            hexLabel.setFont(Theme.FONT_SMALL);
+            info.add(titleLabel, BorderLayout.NORTH);
+            info.add(hexLabel, BorderLayout.SOUTH);
+
+            add(previewDot, BorderLayout.WEST);
+            add(info, BorderLayout.CENTER);
+
+            addMouseListener(new MouseAdapter() {
+                @Override
+                public void mouseClicked(MouseEvent e) {
+                    if (!SwingUtilities.isLeftMouseButton(e)) {
+                        return;
+                    }
+                    Color current = colorSupplier.get();
+                    Color chosen = JColorChooser.showDialog(
+                            ChatPopupWindow.this,
+                            I18n.t(I18n.Key.COLOR_PICKER_TITLE, I18n.t(labelKey)),
+                            current);
+                    if (chosen != null && !chosen.equals(current)) {
+                        onPicked.accept(chosen);
+                    }
+                }
+
+                @Override
+                public void mouseEntered(MouseEvent e) {
+                    setBgSupplier(() -> Theme.BG_CARD_HOVER);
+                }
+
+                @Override
+                public void mouseExited(MouseEvent e) {
+                    setBgSupplier(() -> Theme.BG_INPUT);
+                }
+            });
+            updateLabel();
+            refresh();
+        }
+
+        void updateLabel() {
+            titleLabel.setText(I18n.t(labelKey));
+        }
+
+        void refresh() {
+            titleLabel.setForeground(Theme.TEXT_PRIMARY);
+            hexLabel.setForeground(Theme.TEXT_MUTED);
+            hexLabel.setText(Theme.toHex(colorSupplier.get()));
+            previewDot.repaint();
+            repaint();
+        }
+    }
+
     private static final class ScrollableListPanel extends JPanel implements Scrollable {
+        private static final long serialVersionUID = 1L;
+
         @Override
         public Dimension getPreferredScrollableViewportSize() {
             return getPreferredSize();
@@ -3746,30 +4580,49 @@ public class ChatPopupWindow extends JDialog {
     }
 
     private final class MessageRow extends JPanel {
+        private static final long serialVersionUID = 1L;
         final ChatMessage msg;
-        final JPanel bubble;
+        final UiComponents.RoundedPanel bubble;
         final JPanel body;
         final JLabel metaLabel;
+        final JPanel actionStrip;
+        final JButton quickEditBtn;
         final JButton optionsBtn;
+        JLabel senderLabel;
         JTextArea textArea;
         Component textSpacer;
 
-        MessageRow(ChatMessage msg, boolean showSender, int maxTextWidth) {
-            super(new FlowLayout(msg.isIncoming() ? FlowLayout.LEFT : FlowLayout.RIGHT, 0, 0));
+        MessageRow(ChatMessage msg, boolean showSenderHeader, boolean compactTop, int maxTextWidth) {
             this.msg = msg;
+            setLayout(new BoxLayout(this, BoxLayout.X_AXIS));
             setOpaque(false);
-            setBorder(BorderFactory.createEmptyBorder(2, 0, 4, 0));
+            setBorder(BorderFactory.createEmptyBorder(compactTop ? 1 : 5, 0, 2, 0));
 
-            this.bubble = new JPanel(new BorderLayout(0, 4));
-            this.bubble.setBackground(msg.isIncoming() ? Theme.BUBBLE_IN : Theme.BUBBLE_OUT);
+            boolean incoming = msg.isIncoming();
+            this.bubble = new UiComponents.RoundedPanel(
+                    new BorderLayout(0, 4),
+                    14,
+                    () -> incoming ? Theme.BUBBLE_IN : Theme.BUBBLE_OUT,
+                    () -> {
+                        if (editingMessage == msg) {
+                            return Theme.isLight(Theme.BG_WINDOW) ? Theme.ACCENT : Color.WHITE;
+                        }
+                        return incoming ? Theme.BORDER : null;
+                    }) {
+                @Override
+                public Dimension getMaximumSize() {
+                    return getPreferredSize();
+                }
+            };
             this.bubble.setBorder(BorderFactory.createEmptyBorder(7, 10, 7, 10));
+            this.bubble.setAlignmentY(Component.BOTTOM_ALIGNMENT);
 
-            if (showSender && msg.isIncoming()) {
-                JLabel sender = new JLabel(msg.getSenderName());
-                sender.setFont(Theme.FONT_BOLD);
-                sender.setForeground(Theme.ACCENT_HOVER);
-                attachMessagePopup(sender, this);
-                this.bubble.add(sender, BorderLayout.NORTH);
+            if (showSenderHeader && incoming) {
+                this.senderLabel = new JLabel(msg.getSenderName());
+                this.senderLabel.setFont(Theme.FONT_BOLD);
+                this.senderLabel.setForeground(Theme.ACCENT_HOVER);
+                attachMessagePopup(this.senderLabel, this);
+                this.bubble.add(this.senderLabel, BorderLayout.NORTH);
             }
 
             this.body = new JPanel();
@@ -3788,7 +4641,7 @@ public class ChatPopupWindow extends JDialog {
                     this.textSpacer = Box.createVerticalStrut(5);
                     this.body.add(this.textSpacer);
                 }
-                this.textArea = createSelectableBubbleText(msg.getText(), maxTextWidth, this);
+                this.textArea = createSelectableBubbleText(msg.getText(), incoming, maxTextWidth, this);
                 this.textArea.setAlignmentX(Component.LEFT_ALIGNMENT);
                 this.body.add(this.textArea);
             }
@@ -3798,36 +4651,56 @@ public class ChatPopupWindow extends JDialog {
             this.metaLabel.setHorizontalAlignment(SwingConstants.RIGHT);
             updateMetaLabel();
 
-            this.optionsBtn = new JButton(UiIcons.moreDots(new Color(220, 224, 235, 165), 14));
-            this.optionsBtn.setRolloverIcon(UiIcons.moreDots(Color.WHITE, 14));
-            this.optionsBtn.setContentAreaFilled(false);
-            this.optionsBtn.setBorderPainted(false);
-            this.optionsBtn.setFocusPainted(false);
-            this.optionsBtn.setRolloverEnabled(true);
-            this.optionsBtn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-            this.optionsBtn.setMargin(new Insets(0, 2, 0, 0));
-            this.optionsBtn.setPreferredSize(new Dimension(18, 16));
+            this.bubble.add(this.body, BorderLayout.CENTER);
+            this.bubble.add(this.metaLabel, BorderLayout.SOUTH);
+
+            this.actionStrip = new JPanel(new FlowLayout(
+                    incoming ? FlowLayout.LEFT : FlowLayout.RIGHT, 2, 0));
+            this.actionStrip.setOpaque(false);
+            this.actionStrip.setAlignmentY(Component.BOTTOM_ALIGNMENT);
+
+            boolean editable = !incoming && !(att != null && att.isEncryptedPendingUnlock());
+            if (editable) {
+                this.quickEditBtn = UiIcons.iconButton(
+                        UiIcons.edit(() -> Theme.TEXT_MUTED, 12),
+                        UiIcons.edit(() -> Theme.TEXT_PRIMARY, 12),
+                        20, 6);
+                this.quickEditBtn.setToolTipText(I18n.t(I18n.Key.EDIT_MESSAGE));
+                this.quickEditBtn.addActionListener(e -> promptEditMessage(msg));
+                this.actionStrip.add(this.quickEditBtn);
+            } else {
+                this.quickEditBtn = null;
+            }
+
+            this.optionsBtn = UiIcons.iconButton(
+                    UiIcons.moreDots(() -> Theme.TEXT_MUTED, 13),
+                    UiIcons.moreDots(() -> Theme.TEXT_PRIMARY, 13),
+                    20, 6);
             this.optionsBtn.setToolTipText(I18n.t(I18n.Key.MESSAGE_OPTIONS_TOOLTIP));
             this.optionsBtn.addActionListener(e -> {
                 JPopupMenu menu = buildMessagePopupMenu(this);
                 menu.show(this.optionsBtn, 0, this.optionsBtn.getHeight());
             });
-
-            JPanel footer = new JPanel(new BorderLayout(6, 0));
-            footer.setOpaque(false);
-            footer.add(this.metaLabel, BorderLayout.CENTER);
-            footer.add(this.optionsBtn, BorderLayout.EAST);
-
-            this.bubble.add(this.body, BorderLayout.CENTER);
-            this.bubble.add(footer, BorderLayout.SOUTH);
+            this.actionStrip.add(this.optionsBtn);
+            Dimension stripPref = this.actionStrip.getPreferredSize();
+            this.actionStrip.setMaximumSize(stripPref);
 
             attachMessagePopup(this.bubble, this);
             attachMessagePopup(this.body, this);
             attachMessagePopup(this.metaLabel, this);
-            attachMessagePopup(footer, this);
             attachMessagePopup(this, this);
 
-            add(this.bubble);
+            if (incoming) {
+                add(this.bubble);
+                add(Box.createHorizontalStrut(4));
+                add(this.actionStrip);
+                add(Box.createHorizontalGlue());
+            } else {
+                add(Box.createHorizontalGlue());
+                add(this.actionStrip);
+                add(Box.createHorizontalStrut(4));
+                add(this.bubble);
+            }
         }
 
         @Override
@@ -3850,9 +4723,31 @@ public class ChatPopupWindow extends JDialog {
                 sb.append(" · ").append(I18n.t(I18n.Key.NOT_DELIVERED_LABEL));
             }
             metaLabel.setText(sb.toString());
-            metaLabel.setForeground(msg.isNotDelivered()
-                    ? new Color(255, 196, 196)
-                    : new Color(220, 224, 235, 170));
+            if (msg.isNotDelivered()) {
+                metaLabel.setForeground(Theme.isLight(Theme.BUBBLE_OUT)
+                        ? Theme.DANGER
+                        : new Color(255, 198, 198));
+            } else {
+                metaLabel.setForeground(msg.isIncoming() ? Theme.BUBBLE_IN_META : Theme.BUBBLE_OUT_META);
+            }
+        }
+
+        void updateBurstGrouping(boolean showSenderHeader, boolean compactTop) {
+            setBorder(BorderFactory.createEmptyBorder(compactTop ? 1 : 5, 0, 2, 0));
+            if (msg.isIncoming()) {
+                if (showSenderHeader && senderLabel == null) {
+                    senderLabel = new JLabel(msg.getSenderName());
+                    senderLabel.setFont(Theme.FONT_BOLD);
+                    senderLabel.setForeground(Theme.ACCENT_HOVER);
+                    attachMessagePopup(senderLabel, this);
+                    bubble.add(senderLabel, BorderLayout.NORTH);
+                } else if (!showSenderHeader && senderLabel != null) {
+                    bubble.remove(senderLabel);
+                    senderLabel = null;
+                }
+            }
+            bubble.revalidate();
+            revalidate();
         }
 
         void updateWrapWidth(int maxTextWidth) {
@@ -3860,6 +4755,7 @@ public class ChatPopupWindow extends JDialog {
                 applyBubbleTextWidth(textArea, maxTextWidth);
                 textArea.revalidate();
             }
+            bubble.revalidate();
             revalidate();
             repaint();
         }
@@ -3873,7 +4769,7 @@ public class ChatPopupWindow extends JDialog {
                         textSpacer = Box.createVerticalStrut(5);
                         body.add(textSpacer);
                     }
-                    textArea = createSelectableBubbleText(msg.getText(), maxTextWidth, this);
+                    textArea = createSelectableBubbleText(msg.getText(), msg.isIncoming(), maxTextWidth, this);
                     textArea.setAlignmentX(Component.LEFT_ALIGNMENT);
                     body.add(textArea);
                 } else {
@@ -3903,13 +4799,16 @@ public class ChatPopupWindow extends JDialog {
         final long size;
         final boolean image;
         final ImageIcon thumbnail;
+        final boolean ownedTempFile;
 
-        PendingAttachment(Path file, String displayName, long size, boolean image, ImageIcon thumbnail) {
+        PendingAttachment(Path file, String displayName, long size, boolean image,
+                          ImageIcon thumbnail, boolean ownedTempFile) {
             this.file = file;
             this.displayName = displayName;
             this.size = size;
             this.image = image;
             this.thumbnail = thumbnail;
+            this.ownedTempFile = ownedTempFile;
         }
     }
 }
