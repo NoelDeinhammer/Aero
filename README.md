@@ -9,7 +9,6 @@ An extremely lightweight background LAN chat app written in **Java** with swing.
 - **Change Language** - Choose between German/English.
 - **Disable Notifications** - To completely hide the Client you can turn of Notifications.
 - **On-screen-notification** - Easy to see on-screen Popup
-- **Connect with IP** - (EXPERIMENTAL) You can connect to people with the IP but its still experimental.
 - **Keep Messages** - Optionally keep sent and received messages after quitting Aero. Turn it on or off in Settings.
 
 ## Settings location
