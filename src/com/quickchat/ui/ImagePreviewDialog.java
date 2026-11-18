@@ -85,8 +85,9 @@ public class ImagePreviewDialog extends JDialog {
         statusLabel.setFont(Theme.FONT_SMALL);
         statusLabel.setForeground(Theme.ONLINE_DOT);
 
-        JButton copyBtn = UiIcons.darkButton(null, UiIcons.copy(Theme.TEXT_PRIMARY, 14),
-                Theme.BTN_DARK, Theme.BTN_DARK_HOVER, Theme.BTN_DARK_BORDER, Theme.TEXT_PRIMARY, 8);
+        JButton copyBtn = UiIcons.themedButton(null, UiIcons.copy(() -> Theme.TEXT_PRIMARY, 14),
+                () -> Theme.BTN_DARK, () -> Theme.BTN_DARK_HOVER, () -> Theme.BTN_DARK_BORDER,
+                () -> Theme.TEXT_PRIMARY, 8);
         copyBtn.setPreferredSize(new Dimension(30, 28));
         copyBtn.setToolTipText(I18n.t(I18n.Key.COPY_IMAGE));
 
@@ -104,10 +105,11 @@ public class ImagePreviewDialog extends JDialog {
         };
         copyBtn.addActionListener(e -> doCopy.run());
 
-        JButton downloadBtn = UiIcons.darkButton(
+        JButton downloadBtn = UiIcons.themedButton(
                 I18n.t(I18n.Key.DOWNLOAD_BUTTON),
-                UiIcons.download(Color.WHITE, 14),
-                Theme.BTN_ACCENT, Theme.BTN_ACCENT_HOVER, null, Color.WHITE, 8);
+                UiIcons.download(() -> Theme.BTN_ACCENT_TEXT, 14),
+                () -> Theme.BTN_ACCENT, () -> Theme.BTN_ACCENT_HOVER, null,
+                () -> Theme.BTN_ACCENT_TEXT, 8);
         downloadBtn.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
         downloadBtn.setToolTipText(I18n.t(I18n.Key.DOWNLOAD_TOOLTIP));
         downloadBtn.addActionListener(e -> {
@@ -116,9 +118,10 @@ public class ImagePreviewDialog extends JDialog {
             }
         });
 
-        JButton closeBtn = UiIcons.darkButton(null, UiIcons.cancel(Theme.TEXT_MUTED, 14),
-                Theme.BTN_DARK, Theme.BTN_DARK_HOVER, Theme.BTN_DARK_BORDER, Theme.TEXT_PRIMARY, 8);
-        closeBtn.setPreferredSize(new Dimension(28, 28));
+        JButton closeBtn = UiIcons.iconButton(
+                UiIcons.cancel(() -> Theme.TEXT_MUTED, 14),
+                UiIcons.cancel(() -> Theme.TEXT_PRIMARY, 14),
+                28, 8);
         closeBtn.addActionListener(e -> dispose());
 
         actions.add(statusLabel);
@@ -162,8 +165,7 @@ public class ImagePreviewDialog extends JDialog {
         imageLabel.setHorizontalAlignment(JLabel.CENTER);
 
         JScrollPane scroll = new JScrollPane(imageLabel);
-        scroll.setBorder(null);
-        scroll.getViewport().setBackground(Theme.BG_WINDOW);
+        UiComponents.styleScrollPane(scroll, () -> Theme.BG_WINDOW);
 
         root.add(header, BorderLayout.NORTH);
         root.add(scroll, BorderLayout.CENTER);

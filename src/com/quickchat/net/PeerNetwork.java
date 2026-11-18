@@ -530,18 +530,7 @@ public class PeerNetwork {
                     encode(safeCaption));
 
             boolean ok = sendOfferHeader(peer, header, attachment);
-            if (attachment.isCancelled()) {
-                offer.revoked = true;
-                offeredFiles.remove(transferId, offer);
-                attachment.setStatus(FileAttachment.Status.CANCELLED);
-            } else if (ok) {
-                attachment.setBytesTransferred(fileSize);
-                attachment.setStatus(FileAttachment.Status.COMPLETED);
-            } else {
-                offer.revoked = true;
-                offeredFiles.remove(transferId, offer);
-                attachment.setStatus(FileAttachment.Status.FAILED);
-            }
+            finishOutgoingOffer(transferId, offer, ok);
         });
     }
 
@@ -656,19 +645,30 @@ public class PeerNetwork {
                 Thread.currentThread().interrupt();
             }
 
+            finishOutgoingOffer(transferId, offer, delivered.get() > 0);
+        });
+    }
+
+    private void finishOutgoingOffer(String transferId, OutgoingOffer offer, boolean ok) {
+        FileAttachment attachment = offer.senderAttachment;
+        synchronized (offer) {
             if (attachment.isCancelled()) {
                 offer.revoked = true;
                 offeredFiles.remove(transferId, offer);
-                attachment.setStatus(FileAttachment.Status.CANCELLED);
-            } else if (delivered.get() > 0) {
-                attachment.setBytesTransferred(fileSize);
-                attachment.setStatus(FileAttachment.Status.COMPLETED);
+                if (offer.activeDownloads.get() == 0) {
+                    attachment.setStatus(FileAttachment.Status.CANCELLED);
+                }
+            } else if (ok) {
+                if (offer.activeDownloads.get() == 0) {
+                    attachment.setBytesTransferred(offer.fileSize);
+                    attachment.setStatus(FileAttachment.Status.COMPLETED);
+                }
             } else {
                 offer.revoked = true;
                 offeredFiles.remove(transferId, offer);
                 attachment.setStatus(FileAttachment.Status.FAILED);
             }
-        });
+        }
     }
 
     /**

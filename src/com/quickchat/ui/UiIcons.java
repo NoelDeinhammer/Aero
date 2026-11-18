@@ -13,6 +13,7 @@ import java.awt.BasicStroke;
 import java.awt.Color;
 import java.awt.Component;
 import java.awt.Cursor;
+import java.awt.Dimension;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.Image;
@@ -22,6 +23,7 @@ import java.awt.Toolkit;
 import java.awt.datatransfer.DataFlavor;
 import java.awt.datatransfer.Transferable;
 import java.awt.datatransfer.UnsupportedFlavorException;
+import java.awt.geom.Ellipse2D;
 import java.awt.geom.Path2D;
 import java.awt.image.BufferedImage;
 import java.awt.image.MultiResolutionImage;
@@ -30,6 +32,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Iterator;
 import java.util.List;
+import java.util.function.Supplier;
 
 /**
  * Crisp vector Swing icons and memory-safe image/clipboard utilities.
@@ -39,6 +42,10 @@ public final class UiIcons {
     }
 
     public static Icon paperclip(Color color, int size) {
+        return paperclip(() -> color, size);
+    }
+
+    public static Icon paperclip(Supplier<Color> color, int size) {
         return new VectorIcon(size, size, color, (g, w, h) -> {
             g.setStroke(new BasicStroke(1.65f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
             float s = w / 16f;
@@ -57,6 +64,10 @@ public final class UiIcons {
     }
 
     public static Icon download(Color color, int size) {
+        return download(() -> color, size);
+    }
+
+    public static Icon download(Supplier<Color> color, int size) {
         return new VectorIcon(size, size, color, (g, w, h) -> {
             g.setStroke(new BasicStroke(1.75f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
             float cx = w / 2f;
@@ -64,15 +75,12 @@ public final class UiIcons {
             float arrowBottom = h * 0.66f;
             float arrowWing = w * 0.24f;
 
-            // Vertical stem
             g.drawLine(Math.round(cx), Math.round(top), Math.round(cx), Math.round(arrowBottom));
-            // Arrow head
             g.drawLine(Math.round(cx - arrowWing), Math.round(arrowBottom - arrowWing),
                     Math.round(cx), Math.round(arrowBottom));
             g.drawLine(Math.round(cx + arrowWing), Math.round(arrowBottom - arrowWing),
                     Math.round(cx), Math.round(arrowBottom));
 
-            // Tray at bottom
             float left = w * 0.18f;
             float right = w * 0.82f;
             float trayY = h * 0.84f;
@@ -87,6 +95,10 @@ public final class UiIcons {
     }
 
     public static Icon fileBadge(Color color, int size) {
+        return fileBadge(() -> color, size);
+    }
+
+    public static Icon fileBadge(Supplier<Color> color, int size) {
         return new VectorIcon(size, size, color, (g, w, h) -> {
             g.setStroke(new BasicStroke(1.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
             float l = w * 0.2f;
@@ -110,6 +122,10 @@ public final class UiIcons {
     }
 
     public static Icon copy(Color color, int size) {
+        return copy(() -> color, size);
+    }
+
+    public static Icon copy(Supplier<Color> color, int size) {
         return new VectorIcon(size, size, color, (g, w, h) -> {
             g.setStroke(new BasicStroke(1.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
             int s = Math.max(8, size);
@@ -122,6 +138,10 @@ public final class UiIcons {
     }
 
     public static Icon cancel(Color color, int size) {
+        return cancel(() -> color, size);
+    }
+
+    public static Icon cancel(Supplier<Color> color, int size) {
         return new VectorIcon(size, size, color, (g, w, h) -> {
             g.setStroke(new BasicStroke(1.8f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
             int pad = Math.max(3, Math.round(w * 0.26f));
@@ -131,6 +151,10 @@ public final class UiIcons {
     }
 
     public static Icon moreDots(Color color, int size) {
+        return moreDots(() -> color, size);
+    }
+
+    public static Icon moreDots(Supplier<Color> color, int size) {
         return new VectorIcon(size, size, color, (g, w, h) -> {
             float cy = h / 2f;
             float r = Math.max(1.1f, w * 0.085f);
@@ -145,29 +169,184 @@ public final class UiIcons {
         });
     }
 
+    public static Icon backArrow(Supplier<Color> color, int size) {
+        return new VectorIcon(size, size, color, (g, w, h) -> {
+            g.setStroke(new BasicStroke(1.8f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            float cy = h / 2f;
+            float left = w * 0.22f;
+            float right = w * 0.78f;
+            float wing = w * 0.26f;
+            g.drawLine(Math.round(right), Math.round(cy), Math.round(left), Math.round(cy));
+            g.drawLine(Math.round(left + wing), Math.round(cy - wing), Math.round(left), Math.round(cy));
+            g.drawLine(Math.round(left + wing), Math.round(cy + wing), Math.round(left), Math.round(cy));
+        });
+    }
+
+    public static Icon settings(Supplier<Color> color, int size) {
+        return new VectorIcon(size, size, color, (g, w, h) -> {
+            g.setStroke(new BasicStroke(1.55f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            float cx = w / 2f;
+            float cy = h / 2f;
+            float rOuter = w * 0.34f;
+            float rInner = w * 0.15f;
+            g.draw(new Ellipse2D.Float(cx - rInner, cy - rInner, rInner * 2f, rInner * 2f));
+            g.draw(new Ellipse2D.Float(cx - rOuter, cy - rOuter, rOuter * 2f, rOuter * 2f));
+            for (int i = 0; i < 8; i++) {
+                double ang = i * Math.PI / 4.0;
+                float x1 = (float) (cx + Math.cos(ang) * (rOuter - 0.5f));
+                float y1 = (float) (cy + Math.sin(ang) * (rOuter - 0.5f));
+                float x2 = (float) (cx + Math.cos(ang) * (w * 0.46f));
+                float y2 = (float) (cy + Math.sin(ang) * (h * 0.46f));
+                g.drawLine(Math.round(x1), Math.round(y1), Math.round(x2), Math.round(y2));
+            }
+        });
+    }
+
+    public static Icon members(Supplier<Color> color, int size) {
+        return new VectorIcon(size, size, color, (g, w, h) -> {
+            g.setStroke(new BasicStroke(1.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            float r1 = w * 0.14f;
+            float cx1 = w * 0.38f;
+            float cy1 = h * 0.34f;
+            g.draw(new Ellipse2D.Float(cx1 - r1, cy1 - r1, r1 * 2f, r1 * 2f));
+            Path2D p1 = new Path2D.Float();
+            p1.moveTo(w * 0.14f, h * 0.80f);
+            p1.curveTo(w * 0.14f, h * 0.56f, w * 0.62f, h * 0.56f, w * 0.62f, h * 0.80f);
+            g.draw(p1);
+
+            float r2 = w * 0.11f;
+            float cx2 = w * 0.69f;
+            float cy2 = h * 0.37f;
+            g.draw(new Ellipse2D.Float(cx2 - r2, cy2 - r2, r2 * 2f, r2 * 2f));
+            Path2D p2 = new Path2D.Float();
+            p2.moveTo(w * 0.64f, h * 0.58f);
+            p2.curveTo(w * 0.80f, h * 0.60f, w * 0.86f, h * 0.70f, w * 0.86f, h * 0.80f);
+            g.draw(p2);
+        });
+    }
+
+    public static Icon edit(Supplier<Color> color, int size) {
+        return new VectorIcon(size, size, color, (g, w, h) -> {
+            g.setStroke(new BasicStroke(1.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            Path2D pencil = new Path2D.Float();
+            pencil.moveTo(w * 0.20f, h * 0.80f);
+            pencil.lineTo(w * 0.25f, h * 0.60f);
+            pencil.lineTo(w * 0.68f, h * 0.17f);
+            pencil.lineTo(w * 0.83f, h * 0.32f);
+            pencil.lineTo(w * 0.40f, h * 0.75f);
+            pencil.closePath();
+            g.draw(pencil);
+            g.drawLine(Math.round(w * 0.59f), Math.round(h * 0.26f),
+                    Math.round(w * 0.74f), Math.round(h * 0.41f));
+        });
+    }
+
+    public static Icon trash(Supplier<Color> color, int size) {
+        return new VectorIcon(size, size, color, (g, w, h) -> {
+            g.setStroke(new BasicStroke(1.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            g.drawLine(Math.round(w * 0.20f), Math.round(h * 0.27f),
+                    Math.round(w * 0.80f), Math.round(h * 0.27f));
+            g.drawLine(Math.round(w * 0.38f), Math.round(h * 0.16f),
+                    Math.round(w * 0.62f), Math.round(h * 0.16f));
+            Path2D bin = new Path2D.Float();
+            bin.moveTo(w * 0.28f, h * 0.28f);
+            bin.lineTo(w * 0.32f, h * 0.83f);
+            bin.lineTo(w * 0.68f, h * 0.83f);
+            bin.lineTo(w * 0.72f, h * 0.28f);
+            g.draw(bin);
+            g.drawLine(Math.round(w * 0.44f), Math.round(h * 0.42f),
+                    Math.round(w * 0.44f), Math.round(h * 0.70f));
+            g.drawLine(Math.round(w * 0.56f), Math.round(h * 0.42f),
+                    Math.round(w * 0.56f), Math.round(h * 0.70f));
+        });
+    }
+
+    public static Icon send(Supplier<Color> color, int size) {
+        return new VectorIcon(size, size, color, (g, w, h) -> {
+            g.setStroke(new BasicStroke(1.6f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            Path2D plane = new Path2D.Float();
+            plane.moveTo(w * 0.14f, h * 0.22f);
+            plane.lineTo(w * 0.86f, h * 0.50f);
+            plane.lineTo(w * 0.14f, h * 0.78f);
+            plane.lineTo(w * 0.30f, h * 0.50f);
+            plane.closePath();
+            g.fill(plane);
+        });
+    }
+
+    public static Icon lock(Supplier<Color> color, int size) {
+        return new VectorIcon(size, size, color, (g, w, h) -> {
+            g.setStroke(new BasicStroke(1.45f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            g.drawRoundRect(Math.round(w * 0.22f), Math.round(h * 0.44f),
+                    Math.round(w * 0.56f), Math.round(h * 0.42f), 3, 3);
+            Path2D shackle = new Path2D.Float();
+            shackle.moveTo(w * 0.34f, h * 0.44f);
+            shackle.lineTo(w * 0.34f, h * 0.30f);
+            shackle.curveTo(w * 0.34f, h * 0.16f, w * 0.66f, h * 0.16f, w * 0.66f, h * 0.30f);
+            shackle.lineTo(w * 0.66f, h * 0.44f);
+            g.draw(shackle);
+        });
+    }
+
+    public static Icon group(Supplier<Color> color, int size) {
+        return new VectorIcon(size, size, color, (g, w, h) -> {
+            g.setStroke(new BasicStroke(1.65f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            float r = w * 0.15f;
+            g.draw(new Ellipse2D.Float(w * 0.50f - r, h * 0.22f, r * 2f, r * 2f));
+            Path2D arc = new Path2D.Float();
+            arc.moveTo(w * 0.22f, h * 0.80f);
+            arc.curveTo(w * 0.22f, h * 0.56f, w * 0.78f, h * 0.56f, w * 0.78f, h * 0.80f);
+            g.draw(arc);
+        });
+    }
+
+    public static Icon plus(Supplier<Color> color, int size) {
+        return new VectorIcon(size, size, color, (g, w, h) -> {
+            g.setStroke(new BasicStroke(1.8f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            int pad = Math.round(w * 0.22f);
+            int cx = w / 2;
+            int cy = h / 2;
+            g.drawLine(cx, pad, cx, h - pad);
+            g.drawLine(pad, cy, w - pad, cy);
+        });
+    }
+
     /**
      * Creates a dark rounded Swing button that bypasses light native Windows L&F chrome.
      */
     public static JButton darkButton(String text, Icon icon,
                                      Color bg, Color hoverBg, Color borderColor,
                                      Color fg, int arc) {
+        return themedButton(text, icon, () -> bg, () -> hoverBg,
+                borderColor == null ? null : () -> borderColor, () -> fg, arc);
+    }
+
+    public static JButton themedButton(String text, Icon icon,
+                                       Supplier<Color> bg, Supplier<Color> hoverBg,
+                                       Supplier<Color> borderColor, Supplier<Color> fg, int arc) {
         JButton btn = new JButton(text, icon) {
             @Override
             protected void paintComponent(Graphics g) {
                 Graphics2D g2 = (Graphics2D) g.create();
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                Color fill = bg;
+                Color base = bg != null ? bg.get() : Theme.BTN_DARK;
+                Color hover = hoverBg != null ? hoverBg.get() : null;
+                Color border = borderColor != null ? borderColor.get() : null;
+                Color fill = base;
                 if (!isEnabled()) {
-                    fill = new Color(bg.getRed(), bg.getGreen(), bg.getBlue(), 140);
+                    fill = new Color(base.getRed(), base.getGreen(), base.getBlue(), 130);
                 } else if (getModel().isPressed()) {
-                    fill = bg.darker();
-                } else if (getModel().isRollover() && hoverBg != null) {
-                    fill = hoverBg;
+                    fill = base.darker();
+                } else if (getModel().isRollover() && hover != null) {
+                    fill = hover;
+                }
+                if (fg != null) {
+                    setForeground(fg.get());
                 }
                 g2.setColor(fill);
                 g2.fillRoundRect(0, 0, getWidth(), getHeight(), arc, arc);
-                if (borderColor != null) {
-                    g2.setColor(borderColor);
+                if (border != null) {
+                    g2.setColor(border);
                     g2.drawRoundRect(0, 0, getWidth() - 1, getHeight() - 1, arc, arc);
                 }
                 g2.dispose();
@@ -180,11 +359,42 @@ public final class UiIcons {
         btn.setBorderPainted(false);
         btn.setFocusPainted(false);
         btn.setRolloverEnabled(true);
-        btn.setForeground(fg);
+        btn.setForeground(fg != null ? fg.get() : Theme.TEXT_PRIMARY);
         btn.setFont(Theme.FONT_SMALL);
         btn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
         btn.setMargin(new Insets(4, 8, 4, 8));
         btn.setBorder(BorderFactory.createEmptyBorder(4, 8, 4, 8));
+        return btn;
+    }
+
+    public static JButton iconButton(Icon icon, Icon hoverIcon, int size, int arc) {
+        JButton btn = new JButton(icon) {
+            @Override
+            protected void paintComponent(Graphics g) {
+                if (getModel().isRollover() || getModel().isPressed()) {
+                    Graphics2D g2 = (Graphics2D) g.create();
+                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    Color fill = getModel().isPressed() ? Theme.BG_CARD_HOVER.darker() : Theme.BG_CARD_HOVER;
+                    g2.setColor(fill);
+                    g2.fillRoundRect(0, 0, getWidth(), getHeight(), arc, arc);
+                    g2.dispose();
+                }
+                super.paintComponent(g);
+            }
+        };
+        btn.setUI(new BasicButtonUI());
+        if (hoverIcon != null) {
+            btn.setRolloverIcon(hoverIcon);
+        }
+        btn.setOpaque(false);
+        btn.setContentAreaFilled(false);
+        btn.setBorderPainted(false);
+        btn.setFocusPainted(false);
+        btn.setRolloverEnabled(true);
+        btn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        btn.setMargin(new Insets(0, 0, 0, 0));
+        btn.setBorder(BorderFactory.createEmptyBorder());
+        btn.setPreferredSize(new Dimension(size, size));
         return btn;
     }
 
@@ -343,10 +553,10 @@ public final class UiIcons {
     private static final class VectorIcon implements Icon {
         private final int width;
         private final int height;
-        private final Color color;
+        private final Supplier<Color> color;
         private final Painter painter;
 
-        private VectorIcon(int width, int height, Color color, Painter painter) {
+        private VectorIcon(int width, int height, Supplier<Color> color, Painter painter) {
             this.width = width;
             this.height = height;
             this.color = color;
@@ -359,7 +569,7 @@ public final class UiIcons {
             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
             g2.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
             g2.translate(x, y);
-            g2.setColor(color);
+            g2.setColor(color.get());
             painter.paint(g2, width, height);
             g2.dispose();
         }

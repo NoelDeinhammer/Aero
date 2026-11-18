@@ -45,6 +45,7 @@ public class Main {
         String profileName = parseNameArg(args);
         AppSettings settings = AppSettings.load(profileName);
         I18n.setLanguage(settings.getLanguage());
+        Theme.applyFromSettings(settings);
         String initialName = settings.getDisplayName();
 
         SwingUtilities.invokeLater(() -> {
@@ -259,6 +260,13 @@ public class Main {
                 TrayIcon icon = trayRef.get();
                 if (icon != null) {
                     icon.setPopupMenu(buildTrayMenu(network, chatWindow, hotkeyListener, trayRef));
+                }
+            });
+            chatWindow.setThemeChangeListener(() -> {
+                notificationPopup.applyTheme();
+                TrayIcon icon = trayRef.get();
+                if (icon != null) {
+                    icon.setImage(createTrayImage());
                 }
             });
 

@@ -148,7 +148,32 @@ public final class I18n {
         DELETE_MESSAGE_CONFIRM_LOCAL,
         EDITED_LABEL,
         NOT_DELIVERED_LABEL,
-        MESSAGE_OPTIONS_TOOLTIP
+        MESSAGE_OPTIONS_TOOLTIP,
+        AUTO_DOWNLOAD_IMAGES_LABEL,
+        AUTO_DOWNLOAD_IMAGES_HINT,
+        THEME_SECTION,
+        THEME_PRESETS,
+        COLOR_BG,
+        COLOR_ACCENT,
+        COLOR_BUBBLE_OUT,
+        COLOR_BUBBLE_IN,
+        COLOR_PICKER_TITLE,
+        RESET_COLORS,
+        PRESET_AERO,
+        PRESET_OCEAN,
+        PRESET_EMERALD,
+        PRESET_ROSE,
+        PRESET_GRAPHITE,
+        PRESET_LIGHT,
+        EMPTY_PEERS_TITLE,
+        EMPTY_PEERS_HINT,
+        CHAT_INPUT_PLACEHOLDER,
+        CHAT_INPUT_TOOLTIP,
+        PEER_READY_SUBTITLE,
+        GROUP_OPTIONS_TOOLTIP,
+        WINDOW_SECTION,
+        BACK_TOOLTIP,
+        CLOSE_TOOLTIP
     }
 
     private static volatile Language language = Language.GERMAN;
@@ -277,6 +302,31 @@ public final class I18n {
         de.put(Key.EDITED_LABEL, "bearbeitet");
         de.put(Key.NOT_DELIVERED_LABEL, "nicht zugestellt");
         de.put(Key.MESSAGE_OPTIONS_TOOLTIP, "Nachrichtenoptionen");
+        de.put(Key.AUTO_DOWNLOAD_IMAGES_LABEL, "Screenshots (< 5 MB) automatisch laden");
+        de.put(Key.AUTO_DOWNLOAD_IMAGES_HINT, "Bilder werden sofort im Chat angezeigt.");
+        de.put(Key.THEME_SECTION, "DESIGN & FARBEN");
+        de.put(Key.THEME_PRESETS, "Vorlagen");
+        de.put(Key.COLOR_BG, "Hintergrund");
+        de.put(Key.COLOR_ACCENT, "Akzentfarbe");
+        de.put(Key.COLOR_BUBBLE_OUT, "Eigene Blase");
+        de.put(Key.COLOR_BUBBLE_IN, "Empfangen");
+        de.put(Key.COLOR_PICKER_TITLE, "Farbe wählen – {0}");
+        de.put(Key.RESET_COLORS, "Zurücksetzen");
+        de.put(Key.PRESET_AERO, "Aero");
+        de.put(Key.PRESET_OCEAN, "Ozean");
+        de.put(Key.PRESET_EMERALD, "Smaragd");
+        de.put(Key.PRESET_ROSE, "Rose");
+        de.put(Key.PRESET_GRAPHITE, "Graphit");
+        de.put(Key.PRESET_LIGHT, "Hell");
+        de.put(Key.EMPTY_PEERS_TITLE, "Niemand online");
+        de.put(Key.EMPTY_PEERS_HINT, "Aero sucht automatisch im lokalen Netzwerk.");
+        de.put(Key.CHAT_INPUT_PLACEHOLDER, "Nachricht schreiben…");
+        de.put(Key.CHAT_INPUT_TOOLTIP, "Enter zum Senden · Shift+Enter für neue Zeile");
+        de.put(Key.PEER_READY_SUBTITLE, "Direktchat");
+        de.put(Key.GROUP_OPTIONS_TOOLTIP, "Gruppenoptionen");
+        de.put(Key.WINDOW_SECTION, "FENSTER & BENACHRICHTIGUNGEN");
+        de.put(Key.BACK_TOOLTIP, "Zurück");
+        de.put(Key.CLOSE_TOOLTIP, "Schließen");
         TEXTS.put(Language.GERMAN, Map.copyOf(de));
 
         Map<Key, String> en = new HashMap<>();
@@ -401,6 +451,31 @@ public final class I18n {
         en.put(Key.EDITED_LABEL, "edited");
         en.put(Key.NOT_DELIVERED_LABEL, "not delivered");
         en.put(Key.MESSAGE_OPTIONS_TOOLTIP, "Message options");
+        en.put(Key.AUTO_DOWNLOAD_IMAGES_LABEL, "Auto-download screenshots (< 5 MB)");
+        en.put(Key.AUTO_DOWNLOAD_IMAGES_HINT, "Images appear directly inside the chat.");
+        en.put(Key.THEME_SECTION, "APPEARANCE & COLORS");
+        en.put(Key.THEME_PRESETS, "Presets");
+        en.put(Key.COLOR_BG, "Background");
+        en.put(Key.COLOR_ACCENT, "Accent");
+        en.put(Key.COLOR_BUBBLE_OUT, "Outgoing bubble");
+        en.put(Key.COLOR_BUBBLE_IN, "Incoming bubble");
+        en.put(Key.COLOR_PICKER_TITLE, "Choose color – {0}");
+        en.put(Key.RESET_COLORS, "Reset");
+        en.put(Key.PRESET_AERO, "Aero");
+        en.put(Key.PRESET_OCEAN, "Ocean");
+        en.put(Key.PRESET_EMERALD, "Emerald");
+        en.put(Key.PRESET_ROSE, "Rose");
+        en.put(Key.PRESET_GRAPHITE, "Graphite");
+        en.put(Key.PRESET_LIGHT, "Light");
+        en.put(Key.EMPTY_PEERS_TITLE, "No one online");
+        en.put(Key.EMPTY_PEERS_HINT, "Aero automatically discovers peers on your LAN.");
+        en.put(Key.CHAT_INPUT_PLACEHOLDER, "Write a message…");
+        en.put(Key.CHAT_INPUT_TOOLTIP, "Enter to send · Shift+Enter for new line");
+        en.put(Key.PEER_READY_SUBTITLE, "Direct chat");
+        en.put(Key.GROUP_OPTIONS_TOOLTIP, "Group options");
+        en.put(Key.WINDOW_SECTION, "WINDOW & NOTIFICATIONS");
+        en.put(Key.BACK_TOOLTIP, "Back");
+        en.put(Key.CLOSE_TOOLTIP, "Close");
         TEXTS.put(Language.ENGLISH, Map.copyOf(en));
     }
 
